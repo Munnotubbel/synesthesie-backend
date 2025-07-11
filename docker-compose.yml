@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: synesthesie_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-synesthesie}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-synesthesie_db}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - synesthesie_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-synesthesie}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: synesthesie_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - synesthesie_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: synesthesie_api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=production
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      - JWT_SECRET=dev_jwt_secret_change_in_production
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8081
+      - STRIPE_KEY=sk_test_your_stripe_test_key
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - synesthesie_network
+    volumes:
+      - ./templates:/app/templates:ro
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  synesthesie_network:
+    driver: bridge
