@@ -20,6 +20,28 @@ func NewAdminService(db *gorm.DB, cfg *config.Config) *AdminService {
 	return &AdminService{db: db, cfg: cfg}
 }
 
+func (s *AdminService) GetConfig() *config.Config { return s.cfg }
+
+// CreateAssetRecord stores an asset metadata record
+func (s *AdminService) CreateAssetRecord(key, filename string, size int64, checksum string, isImage bool) (*models.Asset, error) {
+	visibility := models.AssetVisibilityPrivate
+	if isImage {
+		visibility = models.AssetVisibilityPublic
+	}
+	asset := &models.Asset{
+		Key:        key,
+		Filename:   filename,
+		MimeType:   "",
+		SizeBytes:  size,
+		Checksum:   checksum,
+		Visibility: visibility,
+	}
+	if err := s.db.Create(asset).Error; err != nil {
+		return nil, err
+	}
+	return asset, nil
+}
+
 // CreateDefaultAdmin creates the default admin user if it doesn't exist
 func (s *AdminService) CreateDefaultAdmin() error {
 	// Check if admin already exists

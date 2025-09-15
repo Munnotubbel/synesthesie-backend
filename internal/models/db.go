@@ -70,5 +70,6 @@ func Migrate(db *gorm.DB) error {
 		&InviteCode{},
 		&RefreshToken{},
 		&SystemSetting{},
+		&Asset{},
 	)
 }

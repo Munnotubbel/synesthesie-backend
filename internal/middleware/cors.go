@@ -3,6 +3,7 @@ package middleware
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/synesthesie/backend/internal/config"
@@ -12,15 +13,17 @@ import (
 func CORS(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
+		normalizedOrigin := strings.TrimRight(strings.TrimSpace(origin), "/")
 
 		// Debug logging
 		log.Printf("CORS: Request origin: %s", origin)
 		log.Printf("CORS: Allowed origins: %v", cfg.AllowedOrigins)
 
-		// Check if origin is allowed
+		// Check if origin is allowed (normalized comparison)
 		allowed := false
 		for _, allowedOrigin := range cfg.AllowedOrigins {
-			if origin == allowedOrigin {
+			normalizedAllowed := strings.TrimRight(strings.TrimSpace(allowedOrigin), "/")
+			if normalizedOrigin == normalizedAllowed {
 				allowed = true
 				break
 			}
@@ -32,10 +35,11 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 			allowed = true
 		}
 
-		if allowed && origin != "" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		if allowed && normalizedOrigin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", normalizedOrigin)
 		}
 
+		c.Writer.Header().Add("Vary", "Origin")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")

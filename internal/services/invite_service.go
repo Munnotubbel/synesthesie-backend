@@ -221,3 +221,8 @@ func (s *InviteService) GetInviteStats() (map[string]int64, error) {
 
 	return stats, nil
 }
+
+// SetInviteQRGenerated marks the invite as QR generated
+func (s *InviteService) SetInviteQRGenerated(inviteID uuid.UUID) error {
+	return s.db.Model(&models.InviteCode{}).Where("id = ?", inviteID).Update("qr_generated", true).Error
+}

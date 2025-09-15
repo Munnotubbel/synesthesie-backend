@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -50,6 +52,40 @@ func main() {
 	ticketService := services.NewTicketService(db, cfg)
 	emailService := services.NewEmailService(cfg)
 	adminService := services.NewAdminService(db, cfg)
+	storageService := services.NewStorageService(cfg)
+	assetService := services.NewAssetService(db, cfg)
+	s3Service, err := services.NewS3Service(cfg)
+	if err != nil {
+		log.Fatalf("Failed to init S3 service: %v", err)
+	}
+	qrService := services.NewQRService(cfg)
+
+	// Optional: sync missing images on start
+	if cfg.MediaSyncOnStart {
+		go func() {
+			log.Println("MediaSyncOnStart enabled: syncing missing images...")
+			prefix := "images/"
+			keys, err := s3Service.ListMediaKeys(context.Background(), cfg.MediaImagesBucket, prefix, 1000)
+			if err != nil {
+				log.Printf("Image sync list error: %v", err)
+				return
+			}
+			for _, k := range keys {
+				abs := filepath.Join(cfg.LocalAssetsPath, filepath.FromSlash(k))
+				if _, err := os.Stat(abs); err == nil {
+					continue
+				}
+				buf, derr := s3Service.DownloadMedia(context.Background(), cfg.MediaImagesBucket, k)
+				if derr != nil {
+					continue
+				}
+				if _, _, _, err := storageService.SaveStream(context.Background(), k, bytes.NewReader(buf.Bytes())); err != nil {
+					continue
+				}
+			}
+			log.Println("MediaSyncOnStart: image sync complete")
+		}()
+	}
 
 	// Create admin user if not exists
 	if err := adminService.CreateDefaultAdmin(); err != nil {
@@ -70,7 +106,10 @@ func main() {
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService, userService, inviteService, emailService)
 	userHandler := handlers.NewUserHandler(userService, eventService, ticketService)
-	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService)
+	// wire asset/storage into userHandler (exported fields)
+	userHandler.AssetService = assetService
+	userHandler.StorageService = storageService
+	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, storageService, s3Service, qrService)
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg)
 
@@ -109,6 +148,7 @@ func main() {
 			user.GET("/tickets", userHandler.GetUserTickets)
 			user.POST("/tickets", userHandler.BookTicket)
 			user.DELETE("/tickets/:id", userHandler.CancelTicket)
+			user.GET("/assets/:id/download", userHandler.DownloadAsset)
 		}
 
 		// Admin routes
@@ -128,6 +168,7 @@ func main() {
 			admin.GET("/invites", adminHandler.GetAllInvites)
 			admin.POST("/invites", adminHandler.CreateInvite)
 			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
+			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
 
 			// User management
 			admin.GET("/users", adminHandler.GetAllUsers)
@@ -137,6 +178,10 @@ func main() {
 			// Service price management
 			admin.GET("/settings/pickup-price", adminHandler.GetPickupServicePrice)
 			admin.PUT("/settings/pickup-price", adminHandler.UpdatePickupServicePrice)
+
+			// Asset upload + sync
+			admin.POST("/assets/upload", adminHandler.UploadAsset)
+			admin.POST("/assets/images/sync-missing", adminHandler.SyncImagesMissing)
 		}
 
 		// Stripe webhook

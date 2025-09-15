@@ -1,0 +1,89 @@
+# Server Configuration
+PORT=8080
+ENV=development
+API_URL=http://localhost:8080
+FRONTEND_URL=http://localhost:3000
+
+# Database Configuration
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=synesthesie
+DB_PASSWORD=your_secure_password_here
+DB_NAME=synesthesie_db
+DB_SSL_MODE=disable
+
+# Redis Configuration
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# JWT Configuration
+JWT_SECRET=your_very_long_and_secure_jwt_secret_key_here
+JWT_ACCESS_TOKEN_DURATION=1h
+JWT_REFRESH_TOKEN_DURATION=168h
+
+# Admin Configuration
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change_this_admin_password
+ADMIN_EMAIL=admin@synesthesie.de
+
+# Stripe Configuration
+STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+STRIPE_SUCCESS_URL=https://synesthesie.de/payment/success
+STRIPE_CANCEL_URL=https://synesthesie.de/payment/cancel
+
+# SMTP Configuration (Strato)
+SMTP_HOST=smtp.strato.de
+SMTP_PORT=465
+SMTP_USERNAME=info@synesthesie.de
+SMTP_PASSWORD=fhu2MPD4hep.mqw-gwz
+SMTP_FROM=info@synesthesie.de
+SMTP_FROM_NAME=Synesthesie
+
+# Cloudflare R2 Configuration
+R2_ACCOUNT_ID=your_account_id
+R2_ACCESS_KEY_ID=your_access_key
+R2_SECRET_ACCESS_KEY=your_secret_key
+R2_BUCKET_NAME=synesthesie-storage
+R2_PUBLIC_URL=https://your-r2-public-url.r2.dev
+
+# Security Configuration
+BCRYPT_COST=12
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_DURATION=1m
+
+# CORS Configuration
+ALLOWED_ORIGINS=http://localhost:3000,https://synesthesie.de
+ALLOWED_METHODS=GET,POST,PUT,DELETE,OPTIONS
+ALLOWED_HEADERS=Content-Type,Authorization
+
+# Local assets (VPS)
+LOCAL_ASSETS_PATH=/data/assets
+# Beim Start einmalige Synchronisation fehlender Bilder aus S3 (true/false)
+MEDIA_SYNC_ON_START=false
+
+# Media S3 (Strato) - separater Account für Medien
+# Endpoint Beispiel (Strato S3): https://s3.<region>.strato.de oder https://<endpoint>
+MEDIA_S3_ENDPOINT=https://s3.your-strato-endpoint
+MEDIA_S3_REGION=us-east-1
+MEDIA_S3_ACCESS_KEY_ID=your_media_access_key
+MEDIA_S3_SECRET_ACCESS_KEY=your_media_secret_key
+# Strato S3 benötigt in der Regel Path-Style
+MEDIA_S3_USE_PATH_STYLE=true
+# Getrennte Buckets für Bilder und Audio
+MEDIA_IMAGES_BUCKET=synesthesie-images
+MEDIA_AUDIO_BUCKET=synesthesie-audio
+
+# Backup S3 - separater Account für tägliche DB-Backups (Retention via S3 Lifecycle)
+BACKUP_S3_ENDPOINT=https://s3.your-backup-endpoint
+BACKUP_S3_REGION=us-east-1
+BACKUP_S3_ACCESS_KEY_ID=your_backup_access_key
+BACKUP_S3_SECRET_ACCESS_KEY=your_backup_secret_key
+BACKUP_S3_USE_PATH_STYLE=true
+BACKUP_BUCKET=synesthesie-backups
+
+# Media Cache Optionen
+MEDIA_CACHE_AUDIO=false
+AUDIO_CACHE_PATH=/data/assets_cache/audio

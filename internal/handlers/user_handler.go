@@ -1,8 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -11,9 +15,12 @@ import (
 )
 
 type UserHandler struct {
-	userService   *services.UserService
-	eventService  *services.EventService
-	ticketService *services.TicketService
+	userService    *services.UserService
+	eventService   *services.EventService
+	ticketService  *services.TicketService
+	AssetService   *services.AssetService
+	StorageService *services.StorageService
+	S3Service      *services.S3Service
 }
 
 func NewUserHandler(userService *services.UserService, eventService *services.EventService, ticketService *services.TicketService) *UserHandler {
@@ -258,4 +265,77 @@ func (h *UserHandler) CancelTicket(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
+}
+
+// DownloadAsset streams an asset if the user is authenticated and allowed
+func (h *UserHandler) DownloadAsset(c *gin.Context) {
+	assetIDStr := c.Param("id")
+	assetID, err := uuid.Parse(assetIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
+		return
+	}
+
+	asset, err := h.AssetService.GetByID(assetID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "asset not found"})
+		return
+	}
+
+	// Audio: 302 presign + optional Cache
+	if strings.HasPrefix(asset.Key, "audio/") {
+		cfg := h.S3Service.GetConfig()
+		if cfg == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "download service not available"})
+			return
+		}
+		// Cache-Hit
+		if cfg.MediaCacheAudio {
+			cachePath := filepath.Join(cfg.AudioCachePath, filepath.FromSlash(strings.TrimPrefix(asset.Key, "audio/")))
+			if _, statErr := os.Stat(cachePath); statErr == nil {
+				name := asset.Filename
+				if name == "" {
+					name = filepath.Base(asset.Key)
+				}
+				_ = h.StorageService.ServeFileWithRange(c.Writer, c.Request, cachePath, name)
+				return
+			}
+		}
+		url, err := h.S3Service.PresignMediaGet(c, cfg.MediaAudioBucket, asset.Key, 15*60*1e9)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authorize download"})
+			return
+		}
+		if cfg.MediaCacheAudio {
+			go func() {
+				cachePath := filepath.Join(cfg.AudioCachePath, filepath.FromSlash(strings.TrimPrefix(asset.Key, "audio/")))
+				_ = os.MkdirAll(filepath.Dir(cachePath), 0o755)
+				_ = h.S3Service.DownloadMediaToFile(c, cfg.MediaAudioBucket, asset.Key, cachePath)
+			}()
+		}
+		c.Redirect(http.StatusFound, url)
+		return
+	}
+
+	// Images: ensure local exists (fallback from S3) and stream
+	abs := h.AssetService.GetAbsolutePath(asset)
+	if strings.HasPrefix(asset.Key, "images/") && h.S3Service != nil {
+		if _, err := os.Stat(abs); os.IsNotExist(err) {
+			cfg := h.S3Service.GetConfig()
+			if cfg != nil {
+				buf, derr := h.S3Service.DownloadMedia(c, cfg.MediaImagesBucket, asset.Key)
+				if derr == nil {
+					_, _, _, _ = h.StorageService.SaveStream(c, asset.Key, bytes.NewReader(buf.Bytes()))
+				}
+			}
+		}
+	}
+	name := asset.Filename
+	if name == "" {
+		name = filepath.Base(asset.Key)
+	}
+	if err := h.StorageService.ServeFileWithRange(c.Writer, c.Request, abs, name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to stream file"})
+		return
+	}
 }

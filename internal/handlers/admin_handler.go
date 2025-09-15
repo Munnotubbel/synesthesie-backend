@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"bytes"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,18 +17,24 @@ import (
 )
 
 type AdminHandler struct {
-	adminService  *services.AdminService
-	eventService  *services.EventService
-	inviteService *services.InviteService
-	userService   *services.UserService
+	adminService   *services.AdminService
+	eventService   *services.EventService
+	inviteService  *services.InviteService
+	userService    *services.UserService
+	storageService *services.StorageService
+	s3Service      *services.S3Service
+	qrService      *services.QRService
 }
 
-func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService) *AdminHandler {
+func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService, storageService *services.StorageService, s3Service *services.S3Service, qrService *services.QRService) *AdminHandler {
 	return &AdminHandler{
-		adminService:  adminService,
-		eventService:  eventService,
-		inviteService: inviteService,
-		userService:   userService,
+		adminService:   adminService,
+		eventService:   eventService,
+		inviteService:  inviteService,
+		userService:    userService,
+		storageService: storageService,
+		s3Service:      s3Service,
+		qrService:      qrService,
 	}
 }
 
@@ -221,7 +232,7 @@ func (h *AdminHandler) RefundEventTickets(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "All tickets refunded successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Tickets refunded successfully"})
 }
 
 // GetAllInvites retrieves all invite codes
@@ -495,4 +506,148 @@ func (h *AdminHandler) UpdatePickupServicePrice(c *gin.Context) {
 		"message": "Pickup service price updated successfully",
 		"price":   req.Price,
 	})
+}
+
+// UploadAsset allows admin to upload images or flac via multipart/form-data
+// kind=images|audio
+func (h *AdminHandler) UploadAsset(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+	kind := c.DefaultPostForm("kind", "images")
+	if kind != "images" && kind != "audio" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid kind"})
+		return
+	}
+	lower := strings.ToLower(file.Filename)
+	if kind == "images" {
+		if !(strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp")) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported image type"})
+			return
+		}
+		if file.Size > 25*1024*1024 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "image too large"})
+			return
+		}
+	} else {
+		if !strings.HasSuffix(lower, ".flac") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "only .flac allowed"})
+			return
+		}
+		if file.Size > 4*1024*1024*1024 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "audio too large"})
+			return
+		}
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to open upload"})
+		return
+	}
+	defer src.Close()
+
+	key := h.storageService.BuildObjectKey(kind, filepath.Base(file.Filename))
+
+	// Determine content-type
+	ctype := "application/octet-stream"
+	if ext := strings.ToLower(filepath.Ext(file.Filename)); ext != "" {
+		if m := mime.TypeByExtension(ext); m != "" {
+			ctype = m
+		}
+	}
+	if kind == "audio" {
+		// Upload audio directly to S3 (media audio bucket), no local copy
+		if err := h.s3Service.UploadMedia(c, h.adminService.GetConfig().MediaAudioBucket, key, src, ctype); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to upload audio to storage"})
+			return
+		}
+		asset, err := h.adminService.CreateAssetRecord(key, file.Filename, file.Size, "", false)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist asset"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"id": asset.ID, "key": key})
+		return
+	}
+
+	// Images: save locally then upload copy to S3 images bucket
+	absPath, size, checksum, err := h.storageService.SaveStream(c, key, src)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file"})
+		return
+	}
+	// Re-open saved file for upload
+	f, err := os.Open(absPath)
+	if err == nil {
+		defer f.Close()
+		_ = h.s3Service.UploadMedia(c, h.adminService.GetConfig().MediaImagesBucket, key, f, ctype)
+	}
+
+	asset, err := h.adminService.CreateAssetRecord(key, file.Filename, size, checksum, true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist asset"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":       asset.ID,
+		"key":      key,
+		"path":     absPath,
+		"size":     size,
+		"checksum": checksum,
+	})
+}
+
+// SyncImagesMissing pulls missing images from S3 to local cache
+func (h *AdminHandler) SyncImagesMissing(c *gin.Context) {
+	prefix := "images/"
+	keys, err := h.s3Service.ListMediaKeys(c, h.adminService.GetConfig().MediaImagesBucket, prefix, 1000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list images"})
+		return
+	}
+	fetched := 0
+	for _, k := range keys {
+		abs := filepath.Join(h.adminService.GetConfig().LocalAssetsPath, filepath.FromSlash(k))
+		if _, err := os.Stat(abs); err == nil {
+			continue
+		}
+		buf, err := h.s3Service.DownloadMedia(c, h.adminService.GetConfig().MediaImagesBucket, k)
+		if err != nil {
+			continue
+		}
+		if _, _, _, err := h.storageService.SaveStream(c, k, bytes.NewReader(buf.Bytes())); err == nil {
+			fetched++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"synced": fetched})
+}
+
+// GetInviteQR generates (if not yet) and returns a PDF with the invite QR code
+func (h *AdminHandler) GetInviteQR(c *gin.Context) {
+	idStr := c.Param("id")
+	inviteID, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid invite id"})
+		return
+	}
+	invite, err := h.inviteService.GetInviteByID(inviteID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "invite not found"})
+		return
+	}
+	pdfBytes, err := h.qrService.GenerateInviteQRPDF(invite)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate QR"})
+		return
+	}
+	if !invite.QRGenerated {
+		_ = h.inviteService.SetInviteQRGenerated(inviteID)
+	}
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", "attachment; filename=invite_"+inviteID.String()+".pdf")
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }

@@ -23,6 +23,7 @@ type InviteCode struct {
 	RegisteredBy *uuid.UUID `gorm:"type:uuid" json:"registered_by,omitempty"`
 	ViewedAt     *time.Time `json:"viewed_at,omitempty"`
 	RegisteredAt *time.Time `json:"registered_at,omitempty"`
+	QRGenerated  bool       `gorm:"not null;default:false" json:"qr_generated"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 

@@ -59,6 +59,31 @@ type Config struct {
 	R2BucketName      string
 	R2PublicURL       string
 
+	// Media S3 (Strato) - separate account for media
+	MediaS3Endpoint        string
+	MediaS3Region          string
+	MediaS3AccessKeyID     string
+	MediaS3SecretAccessKey string
+	MediaS3UsePathStyle    bool
+	MediaImagesBucket      string
+	MediaAudioBucket       string
+
+	// Backup S3 - separate account for daily DB dumps
+	BackupS3Endpoint        string
+	BackupS3Region          string
+	BackupS3AccessKeyID     string
+	BackupS3SecretAccessKey string
+	BackupS3UsePathStyle    bool
+	BackupBucket            string
+
+	// Local storage
+	LocalAssetsPath  string
+	MediaSyncOnStart bool
+
+	// Media caching
+	MediaCacheAudio bool
+	AudioCachePath  string
+
 	// Security
 	BcryptCost        int
 	RateLimitRequests int
@@ -122,6 +147,31 @@ func New() *Config {
 		R2SecretAccessKey: getEnv("R2_SECRET_ACCESS_KEY", ""),
 		R2BucketName:      getEnv("R2_BUCKET_NAME", "synesthesie-storage"),
 		R2PublicURL:       getEnv("R2_PUBLIC_URL", ""),
+
+		// Media S3 (Strato)
+		MediaS3Endpoint:        getEnv("MEDIA_S3_ENDPOINT", ""),
+		MediaS3Region:          getEnv("MEDIA_S3_REGION", "us-east-1"),
+		MediaS3AccessKeyID:     getEnv("MEDIA_S3_ACCESS_KEY_ID", ""),
+		MediaS3SecretAccessKey: getEnv("MEDIA_S3_SECRET_ACCESS_KEY", ""),
+		MediaS3UsePathStyle:    getEnv("MEDIA_S3_USE_PATH_STYLE", "true") == "true",
+		MediaImagesBucket:      getEnv("MEDIA_IMAGES_BUCKET", "synesthesie-images"),
+		MediaAudioBucket:       getEnv("MEDIA_AUDIO_BUCKET", "synesthesie-audio"),
+
+		// Backup S3
+		BackupS3Endpoint:        getEnv("BACKUP_S3_ENDPOINT", ""),
+		BackupS3Region:          getEnv("BACKUP_S3_REGION", "us-east-1"),
+		BackupS3AccessKeyID:     getEnv("BACKUP_S3_ACCESS_KEY_ID", ""),
+		BackupS3SecretAccessKey: getEnv("BACKUP_S3_SECRET_ACCESS_KEY", ""),
+		BackupS3UsePathStyle:    getEnv("BACKUP_S3_USE_PATH_STYLE", "true") == "true",
+		BackupBucket:            getEnv("BACKUP_BUCKET", "synesthesie-backups"),
+
+		// Local storage
+		LocalAssetsPath:  getEnv("LOCAL_ASSETS_PATH", "/data/assets"),
+		MediaSyncOnStart: getEnv("MEDIA_SYNC_ON_START", "false") == "true",
+
+		// Media caching
+		MediaCacheAudio: getEnv("MEDIA_CACHE_AUDIO", "false") == "true",
+		AudioCachePath:  getEnv("AUDIO_CACHE_PATH", "/data/assets_cache/audio"),
 
 		// Security
 		BcryptCost:        getEnvAsInt("BCRYPT_COST", 12),

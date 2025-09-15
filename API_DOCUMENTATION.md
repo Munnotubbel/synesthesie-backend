@@ -4,6 +4,75 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 ---
 
+### Assets und Medien
+
+#### `POST /api/v1/admin/assets/upload`
+- Beschreibung: Upload von Dateien (Admin). Unterstützt Bilder und Audio.
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `file` (required): Datei
+  - `kind` (optional): `images`|`audio` (Default: `images`)
+- Verhalten:
+  - Bilder: werden lokal gespeichert und zusätzlich in `MEDIA_IMAGES_BUCKET` hochgeladen.
+  - Audio (.flac): werden direkt in `MEDIA_AUDIO_BUCKET` hochgeladen (kein lokaler Speicher).
+- Response (200 OK):
+  ```json
+  { "id": "uuid", "key": "images/.. oder audio/..", "path": "string?", "size": 12345, "checksum": "..." }
+  ```
+
+#### `POST /api/v1/admin/assets/images/sync-missing`
+- Beschreibung: Synchronisiert fehlende Bilddateien aus dem Image-Bucket lokal (Cache/Erstbefüllung).
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  { "synced": 42 }
+  ```
+
+#### `GET /api/v1/user/assets/:id/download`
+- Beschreibung: Download eines Assets für eingeloggte Benutzer (Range-Unterstützung).
+- Auth: erforderlich.
+- Verhalten:
+  - Audio: 302 Redirect auf eine kurzlebige presigned S3-URL. Optionaler lokaler Audio-Cache, wenn `MEDIA_CACHE_AUDIO=true`.
+  - Bilder: Stream von der lokalen Platte. Falls Datei fehlt, wird sie einmalig aus dem Image-Bucket nachgeladen und lokal gecached.
+
+---
+
+### Invite QR-Codes
+
+#### `GET /api/v1/admin/invites/:id/qr.pdf`
+- Beschreibung: Generiert eine druckfähige PDF mit QR-Code für den Invite-Link `FRONTEND_URL/register?invite=<code>` und markiert den Invite als erstellt (`qr_generated=true`).
+- Auth: Admin erforderlich.
+- Response: `application/pdf` (Download)
+
+InviteCode Felder (Erweiterung):
+- `qr_generated` (bool): true, sobald die PDF einmal erzeugt/heruntergeladen wurde.
+
+---
+
+### Backups
+
+- Tägliche Datenbank-Backups in separaten S3-Account/Bucket (Backup-S3) vorgesehen.
+- Skript: `backup/backup_db.sh` (nutzt `pg_dump`, Komprimierung und Upload via S3 API)
+- Systemd-Beispiele: `backup/README.md` (Timer und Service).
+- Retention: 90 Tage per S3 Lifecycle Policy (Prefix `db/`).
+
+---
+
+### Relevante Umgebungsvariablen (Erweiterung)
+
+- Media S3 (getrennter Account):
+  - `MEDIA_S3_ENDPOINT`, `MEDIA_S3_REGION`, `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY`, `MEDIA_S3_USE_PATH_STYLE`
+  - `MEDIA_IMAGES_BUCKET`, `MEDIA_AUDIO_BUCKET`
+- Backup S3 (separater Account):
+  - `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`, `BACKUP_S3_USE_PATH_STYLE`
+  - `BACKUP_BUCKET`
+- Lokal/Cache/Sync:
+  - `LOCAL_ASSETS_PATH` (Standard `/data/assets`)
+  - `MEDIA_SYNC_ON_START` (true/false) – fehlende Bilder bei Start synchronisieren
+  - `MEDIA_CACHE_AUDIO` (true/false) – Audio lokal cachen
+  - `AUDIO_CACHE_PATH` (Standard `/data/assets_cache/audio`)
+
 ### **Health Check**
 
 #### `GET /health`
