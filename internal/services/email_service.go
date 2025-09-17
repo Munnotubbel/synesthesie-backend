@@ -35,6 +35,7 @@ func (s *EmailService) loadTemplates() {
 		"ticket_confirmation.html",
 		"event_reminder.html",
 		"cancellation_confirmation.html",
+		"password_reset.html",
 	}
 
 	for _, file := range templateFiles {
@@ -59,6 +60,15 @@ func (s *EmailService) SendRegistrationConfirmation(to, name, username, email st
 
 	subject := "Willkommen bei Synesthesie!"
 	return s.sendEmail(to, subject, "registration_confirmation.html", data)
+}
+
+// SendPasswordResetLinkEmail sends a styled HTML reset link email
+func (s *EmailService) SendPasswordResetLinkEmail(to, name, resetURL string) error {
+	data := map[string]interface{}{
+		"Name":     name,
+		"ResetURL": resetURL,
+	}
+	return s.sendEmail(to, "Passwort zurücksetzen", "password_reset.html", data)
 }
 
 // SendTicketConfirmation sends a ticket purchase confirmation email
@@ -172,14 +182,26 @@ func (s *EmailService) sendSMTP(to string, message []byte) error {
 	return smtp.SendMail(addr, auth, s.cfg.SMTPFrom, []string{to}, message)
 }
 
-// SendPasswordResetEmail sends a password reset email
+// SendGenericTextEmail sends a plain text email with given subject and body
+func (s *EmailService) SendGenericTextEmail(to, subject, body string) error {
+	from := fmt.Sprintf("%s <%s>", s.cfg.SMTPFromName, s.cfg.SMTPFrom)
+	message := fmt.Sprintf("From: %s\r\n", from)
+	message += fmt.Sprintf("To: %s\r\n", to)
+	message += fmt.Sprintf("Subject: %s\r\n", subject)
+	message += "Content-Type: text/plain; charset=\"UTF-8\"\r\n"
+	message += "\r\n"
+	message += body
+	return s.sendSMTP(to, []byte(message))
+}
+
+// SendPasswordResetEmail keeps backward-compat for admin-triggered resets (plain text)
 func (s *EmailService) SendPasswordResetEmail(to, name, newPassword string) error {
 	// Simple text email for password reset
 	subject := "Passwort zurückgesetzt - Synesthesie"
 
 	body := fmt.Sprintf(`Hallo %s,
 
-dein Passwort wurde erfolgreich zurückgesetzt.
+Dein Passwort wurde erfolgreich zurückgesetzt.
 
 Dein neues Passwort lautet: %s
 

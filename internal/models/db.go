@@ -14,13 +14,20 @@ import (
 
 // InitDB initializes the database connection
 func InitDB(cfg *config.Config) (*gorm.DB, error) {
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode)
+	// Include timezone in DSN
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode, cfg.DBTimeZone)
+
+	// Load location for NowFunc
+	loc, err := time.LoadLocation(cfg.DBTimeZone)
+	if err != nil {
+		loc = time.FixedZone("Europe/Berlin", 1*60*60) // Fallback CET
+	}
 
 	gormConfig := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 		NowFunc: func() time.Time {
-			return time.Now().UTC()
+			return time.Now().In(loc)
 		},
 		PrepareStmt: true,
 	}
@@ -72,5 +79,6 @@ func Migrate(db *gorm.DB) error {
 		&SystemSetting{},
 		&Asset{},
 		&PhoneVerification{},
+		&PasswordReset{},
 	)
 }

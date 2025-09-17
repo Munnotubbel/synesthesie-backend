@@ -140,6 +140,9 @@ func main() {
 			// Mobile verification (requires auth)
 			auth.POST("/verify-mobile", middleware.Auth(authService), authHandler.VerifyMobile)
 			auth.POST("/verify-mobile/resend", middleware.Auth(authService), authHandler.ResendMobileVerification)
+			// Password reset
+			auth.POST("/password/forgot", authHandler.ForgotPassword)
+			auth.POST("/password/reset", authHandler.ResetPassword)
 		}
 
 		// User routes

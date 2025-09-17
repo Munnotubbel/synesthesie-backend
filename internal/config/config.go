@@ -21,6 +21,7 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
+	DBTimeZone string
 
 	// Redis
 	RedisHost     string
@@ -121,6 +122,7 @@ func New() *Config {
 		DBPassword: getEnv("DB_PASSWORD", "password"),
 		DBName:     getEnv("DB_NAME", "synesthesie_db"),
 		DBSSLMode:  getEnv("DB_SSL_MODE", "disable"),
+		DBTimeZone: getEnv("DB_TIMEZONE", "Europe/Berlin"),
 
 		// Redis
 		RedisHost:     getEnv("REDIS_HOST", "localhost"),

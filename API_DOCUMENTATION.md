@@ -695,3 +695,21 @@ Der neue Einladungscode-Workflow funktioniert wie folgt:
 - Response:
   - 200 OK `text/csv` Download.
   - 200 OK `{ "status": "no_pickups" }`, wenn keine Einträge.
+
+### Auth – Passwort zurücksetzen
+
+#### `POST /api/v1/auth/password/forgot`
+- Beschreibung: Fordert einen Passwort-Reset per E-Mail an.
+- Request:
+```json
+{ "email": "user@example.com" }
+```
+- Response (immer 200): `{ "message": "If the email exists, a reset link has been sent." }`
+
+#### `POST /api/v1/auth/password/reset`
+- Beschreibung: Setzt mit Token ein neues Passwort.
+- Request:
+```json
+{ "token": "string", "new_password": "string" }
+```
+- Response 200: `{ "message": "Password reset successful" }`

@@ -219,3 +219,37 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Logout successful"})
 }
+
+// ForgotPassword requests a password reset link via email
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	_ = h.authService.RequestPasswordReset(req.Email)
+	c.JSON(http.StatusOK, gin.H{"message": "If the email exists, a reset link has been sent."})
+}
+
+// ResetPassword sets a new password using a valid token
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var req struct {
+		Token       string `json:"token" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !validation.ValidatePassword(req.NewPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be strong (min 12, upper/lower/number/special)"})
+		return
+	}
+	if err := h.authService.PerformPasswordReset(req.Token, req.NewPassword); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Password reset successful"})
+}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,24 @@ func NewEventService(db *gorm.DB) *EventService {
 // GetDB returns the database instance
 func (s *EventService) GetDB() *gorm.DB {
 	return s.db
+}
+
+// helper: compose Date (Y-M-D) with HH:MM in Europe/Berlin
+func (s *EventService) composeDateTime(date time.Time, hm string) (time.Time, error) {
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		loc = time.Local
+	}
+	date = date.In(loc)
+	if len(hm) < 4 {
+		return date, errors.New("invalid time format")
+	}
+	var hh, mm int
+	// accept "HH:MM"
+	if _, perr := fmt.Sscanf(hm, "%02d:%02d", &hh, &mm); perr != nil {
+		return date, errors.New("invalid time format")
+	}
+	return time.Date(date.Year(), date.Month(), date.Day(), hh, mm, 0, 0, loc), nil
 }
 
 // GetTurnoverByEventIDs returns a map[eventID]turnover (sum of total_amount for paid tickets)
@@ -49,6 +68,18 @@ func (s *EventService) GetTurnoverByEventIDs(eventIDs []uuid.UUID) (map[uuid.UUI
 
 // CreateEvent creates a new event
 func (s *EventService) CreateEvent(event *models.Event) error {
+	// Compose DateFrom/DateTo using TimeFrom/TimeTo
+	df, err := s.composeDateTime(event.DateFrom, event.TimeFrom)
+	if err != nil {
+		return errors.New("invalid time_from format; expected HH:MM")
+	}
+	dt, err := s.composeDateTime(event.DateTo, event.TimeTo)
+	if err != nil {
+		return errors.New("invalid time_to format; expected HH:MM")
+	}
+	event.DateFrom = df
+	event.DateTo = dt
+
 	// Validate event dates
 	if event.DateFrom.After(event.DateTo) {
 		return errors.New("start date must be before end date")
@@ -93,41 +124,85 @@ func (s *EventService) GetEventByID(eventID uuid.UUID) (*models.Event, error) {
 
 // UpdateEvent updates an existing event
 func (s *EventService) UpdateEvent(eventID uuid.UUID, updates map[string]interface{}) error {
-	// Validate updates
-	if dateFrom, ok := updates["date_from"].(time.Time); ok {
-		if dateTo, ok := updates["date_to"].(time.Time); ok {
-			if dateFrom.After(dateTo) {
-				return errors.New("start date must be before end date")
-			}
+	// Load current event
+	var ev models.Event
+	if err := s.db.First(&ev, eventID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("event not found")
 		}
+		return err
 	}
 
-	if maxParticipants, ok := updates["max_participants"].(int); ok && maxParticipants <= 0 {
+	// Apply updates to struct
+	if v, ok := updates["name"].(string); ok && v != "" {
+		ev.Name = v
+	}
+	if v, ok := updates["description"].(string); ok {
+		ev.Description = v
+	}
+	if v, ok := updates["date_from"].(time.Time); ok && !v.IsZero() {
+		ev.DateFrom = v
+	}
+	if v, ok := updates["date_to"].(time.Time); ok && !v.IsZero() {
+		ev.DateTo = v
+	}
+	if v, ok := updates["time_from"].(string); ok && v != "" {
+		ev.TimeFrom = v
+	}
+	if v, ok := updates["time_to"].(string); ok && v != "" {
+		ev.TimeTo = v
+	}
+	if v, ok := updates["max_participants"].(int); ok && v > 0 {
+		ev.MaxParticipants = v
+	}
+	if v, ok := updates["allowed_group"].(string); ok && v != "" {
+		ev.AllowedGroup = v
+	}
+	if v, ok := updates["guests_price"].(float64); ok {
+		ev.GuestsPrice = v
+	}
+	if v, ok := updates["bubble_price"].(float64); ok {
+		ev.BubblePrice = v
+	}
+
+	// Compose new DateFrom/DateTo using possibly updated times
+	df, err := s.composeDateTime(ev.DateFrom, ev.TimeFrom)
+	if err != nil {
+		return errors.New("invalid time_from format; expected HH:MM")
+	}
+	dt, err := s.composeDateTime(ev.DateTo, ev.TimeTo)
+	if err != nil {
+		return errors.New("invalid time_to format; expected HH:MM")
+	}
+	ev.DateFrom = df
+	ev.DateTo = dt
+
+	// Validations
+	if ev.DateFrom.After(ev.DateTo) {
+		return errors.New("start date must be before end date")
+	}
+	if ev.MaxParticipants <= 0 {
 		return errors.New("max participants must be greater than 0")
 	}
-
-	if ag, ok := updates["allowed_group"].(string); ok {
-		if ag != "all" && ag != "guests" && ag != "bubble" {
-			return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
-		}
+	if ev.AllowedGroup != "all" && ev.AllowedGroup != "guests" && ev.AllowedGroup != "bubble" {
+		return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
 	}
-	if gp, ok := updates["guests_price"].(float64); ok && gp < 0 {
-		return errors.New("guests_price cannot be negative")
-	}
-	if bp, ok := updates["bubble_price"].(float64); ok && bp < 0 {
-		return errors.New("bubble_price cannot be negative")
+	if ev.GuestsPrice < 0 || ev.BubblePrice < 0 {
+		return errors.New("prices cannot be negative")
 	}
 
-	result := s.db.Model(&models.Event{}).Where("id = ?", eventID).Updates(updates)
-	if result.Error != nil {
-		return result.Error
-	}
-
-	if result.RowsAffected == 0 {
-		return errors.New("event not found")
-	}
-
-	return nil
+	return s.db.Model(&models.Event{}).Where("id = ?", eventID).Updates(map[string]interface{}{
+		"name":             ev.Name,
+		"description":      ev.Description,
+		"date_from":        ev.DateFrom,
+		"date_to":          ev.DateTo,
+		"time_from":        ev.TimeFrom,
+		"time_to":          ev.TimeTo,
+		"max_participants": ev.MaxParticipants,
+		"allowed_group":    ev.AllowedGroup,
+		"guests_price":     ev.GuestsPrice,
+		"bubble_price":     ev.BubblePrice,
+	}).Error
 }
 
 // DeleteEvent deletes an event

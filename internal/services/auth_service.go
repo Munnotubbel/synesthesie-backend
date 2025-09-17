@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -22,6 +24,7 @@ type AuthService struct {
 	redis      *redis.Client
 	cfg        *config.Config
 	smsService *SMSService
+	email      *EmailService
 }
 
 func (s *AuthService) GetConfig() *config.Config { return s.cfg }
@@ -34,6 +37,8 @@ func NewAuthService(db *gorm.DB, redis *redis.Client, cfg *config.Config, sms *S
 		smsService: sms,
 	}
 }
+
+func (s *AuthService) AttachEmailService(es *EmailService) { s.email = es }
 
 // Login authenticates a user and returns tokens
 func (s *AuthService) Login(username, password string) (string, string, *models.User, error) {
@@ -313,4 +318,64 @@ func (s *AuthService) GetUserByID(userID uuid.UUID) (*models.User, error) {
 // CleanupExpiredTokens removes expired refresh tokens
 func (s *AuthService) CleanupExpiredTokens() error {
 	return s.db.Where("expires_at < ?", time.Now()).Delete(&models.RefreshToken{}).Error
+}
+
+// RequestPasswordReset creates a token and sends email if possible
+func (s *AuthService) RequestPasswordReset(email string) error {
+	var user models.User
+	if err := s.db.Where("email = ?", email).First(&user).Error; err != nil {
+		// do not leak existence
+		return nil
+	}
+	// generate token
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(buf)
+	pr := &models.PasswordReset{
+		UserID:    user.ID,
+		Token:     token,
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}
+	if err := s.db.Create(pr).Error; err != nil {
+		return err
+	}
+	// send email if configured
+	if s.email != nil {
+		resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.cfg.FrontendURL, token)
+		_ = s.email.SendPasswordResetLinkEmail(user.Email, user.Name, resetURL)
+	}
+	return nil
+}
+
+// PerformPasswordReset verifies token and sets new password
+func (s *AuthService) PerformPasswordReset(token, newPassword string) error {
+	var pr models.PasswordReset
+	if err := s.db.Where("token = ? AND used_at IS NULL AND expires_at > ?", token, time.Now()).First(&pr).Error; err != nil {
+		return errors.New("invalid or expired token")
+	}
+	// load user
+	var user models.User
+	if err := s.db.First(&user, pr.UserID).Error; err != nil {
+		return errors.New("user not found")
+	}
+	// hash
+	hash, err := crypto.HashPassword(newPassword, s.cfg.BcryptCost)
+	if err != nil {
+		return err
+	}
+	// tx update
+	tx := s.db.Begin()
+	if err := tx.Model(&models.User{}).Where("id = ?", user.ID).Update("password", hash).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	now := time.Now()
+	if err := tx.Model(&pr).Updates(map[string]interface{}{"used_at": now}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	tx.Commit()
+	return nil
 }

@@ -268,6 +268,12 @@ Benutzerfelder erweitert:
 
 ---
 
+### Auth – Passwort-Reset
+- `POST /api/v1/auth/password/forgot` → sendet Reset-Link (immer 200)
+- `POST /api/v1/auth/password/reset` → setzt per Token ein neues Passwort
+
+---
+
 ### **Benutzer-Endpunkte (`/user`)**
 **Alle Endpunkte in diesem Abschnitt erfordern eine Authentifizierung.**
 
@@ -597,27 +603,4 @@ Benutzerfelder erweitert:
   }
   ```
 
-##### `PUT /admin/settings/pickup-price`
-- **Beschreibung:** Aktualisiert den Preis für den Abholservice.
-- **Request Body:**
-  ```json
-  {
-    "price": "float64"
-  }
-  ```
-- **Response Body (200 OK):** `{"message": "Pickup price updated successfully"}`
-
----
-
-### Admin: Pickup-Export CSV
-- `GET /api/v1/admin/pickups/export.csv`
-- Query: `event_id` (optional), `status` (paid|all; default paid)
-- CSV: `Name, Mobile, Pickup-Address`
-- Liefert 200 `text/csv` oder `{ "status": "no_pickups" }` bei keinen Daten.
-
----
-
-### Profil-Update (`PUT /user/profile`)
-- `mobile`-Änderung:
-  - Bei `SMS_VERIFICATION_ENABLED=true`: setzt `mobile_verified=false` und sendet Code; Response-Hinweis zur Verifizierung.
-  - Bei `SMS_VERIFICATION_ENABLED=false`: übernimmt die Nummer direkt ohne Verifizierung.
+##### `
