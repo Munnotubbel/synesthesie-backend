@@ -13,12 +13,13 @@ type User struct {
 	Email              string    `gorm:"uniqueIndex;not null" json:"email"`
 	Password           string    `gorm:"not null" json:"-"`
 	Name               string    `gorm:"not null" json:"name"`
-	FavoriteDrink      string    `json:"favorite_drink"`
-	FavoriteCocktail   string    `json:"favorite_cocktail"`
-	FavoriteShot       string    `json:"favorite_shot"`
+	Drink1             string    `json:"drink1"`
+	Drink2             string    `json:"drink2"`
+	Drink3             string    `json:"drink3"`
 	IsAdmin            bool      `gorm:"default:false" json:"is_admin"`
 	IsActive           bool      `gorm:"default:true" json:"is_active"`
 	RegisteredWithCode string    `json:"registered_with_code,omitempty"`
+	Group              string    `gorm:"type:varchar(20);not null;default:'guests'" json:"group"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 

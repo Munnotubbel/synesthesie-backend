@@ -28,14 +28,14 @@ func NewAuthHandler(authService *services.AuthService, userService *services.Use
 // Register handles user registration
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req struct {
-		InviteCode       string `json:"invite_code" binding:"required"`
-		Username         string `json:"username" binding:"required,min=3,max=30"`
-		Email            string `json:"email" binding:"required,email"`
-		Password         string `json:"password" binding:"required,min=8"`
-		Name             string `json:"name" binding:"required"`
-		FavoriteDrink    string `json:"favorite_drink"`
-		FavoriteCocktail string `json:"favorite_cocktail"`
-		FavoriteShot     string `json:"favorite_shot"`
+		InviteCode string `json:"invite_code" binding:"required"`
+		Username   string `json:"username" binding:"required,min=3,max=30"`
+		Email      string `json:"email" binding:"required,email"`
+		Password   string `json:"password" binding:"required,min=8"`
+		Name       string `json:"name" binding:"required"`
+		Drink1     string `json:"drink1"`
+		Drink2     string `json:"drink2"`
+		Drink3     string `json:"drink3"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -74,9 +74,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		req.Email,
 		req.Password,
 		req.Name,
-		req.FavoriteDrink,
-		req.FavoriteCocktail,
-		req.FavoriteShot,
+		req.Drink1,
+		req.Drink2,
+		req.Drink3,
 		req.InviteCode,
 	)
 
@@ -95,6 +95,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			"username": user.Username,
 			"email":    user.Email,
 			"name":     user.Name,
+			"group":    user.Group,
 		},
 	})
 }
@@ -126,6 +127,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			"email":    user.Email,
 			"name":     user.Name,
 			"is_admin": user.IsAdmin,
+			"group":    user.Group,
 		},
 	})
 }

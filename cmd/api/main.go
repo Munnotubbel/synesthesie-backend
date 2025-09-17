@@ -169,11 +169,14 @@ func main() {
 			admin.POST("/invites", adminHandler.CreateInvite)
 			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
 			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
+			admin.GET("/invites/export.csv", adminHandler.ExportInvitesCSV)
+			admin.PUT("/users/:id/group", adminHandler.ReassignUserGroup)
 
 			// User management
 			admin.GET("/users", adminHandler.GetAllUsers)
 			admin.GET("/users/:id", adminHandler.GetUserDetails)
 			admin.PUT("/users/:id/password", adminHandler.ResetUserPassword)
+			admin.PUT("/users/:id/active", adminHandler.UpdateUserActive)
 
 			// Service price management
 			admin.GET("/settings/pickup-price", adminHandler.GetPickupServicePrice)

@@ -199,47 +199,47 @@ func (s *AdminService) GetDashboardStats() (map[string]interface{}, error) {
 func (s *AdminService) GetUserStats() (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
-	// Most popular drinks
-	var drinks []struct {
-		FavoriteDrink string
-		Count         int64
+	// Most popular drink1
+	var drink1 []struct {
+		Drink1 string
+		Count  int64
 	}
 	s.db.Model(&models.User{}).
-		Select("favorite_drink, COUNT(*) as count").
-		Where("favorite_drink IS NOT NULL AND favorite_drink != ''").
-		Group("favorite_drink").
+		Select("drink1, COUNT(*) as count").
+		Where("drink1 IS NOT NULL AND drink1 != ''").
+		Group("drink1").
 		Order("count DESC").
 		Limit(10).
-		Scan(&drinks)
-	stats["popular_drinks"] = drinks
+		Scan(&drink1)
+	stats["popular_drink1"] = drink1
 
-	// Most popular cocktails
-	var cocktails []struct {
-		FavoriteCocktail string
-		Count            int64
+	// Most popular drink2
+	var drink2 []struct {
+		Drink2 string
+		Count  int64
 	}
 	s.db.Model(&models.User{}).
-		Select("favorite_cocktail, COUNT(*) as count").
-		Where("favorite_cocktail IS NOT NULL AND favorite_cocktail != ''").
-		Group("favorite_cocktail").
+		Select("drink2, COUNT(*) as count").
+		Where("drink2 IS NOT NULL AND drink2 != ''").
+		Group("drink2").
 		Order("count DESC").
 		Limit(10).
-		Scan(&cocktails)
-	stats["popular_cocktails"] = cocktails
+		Scan(&drink2)
+	stats["popular_drink2"] = drink2
 
-	// Most popular shots
-	var shots []struct {
-		FavoriteShot string
-		Count        int64
+	// Most popular drink3
+	var drink3 []struct {
+		Drink3 string
+		Count  int64
 	}
 	s.db.Model(&models.User{}).
-		Select("favorite_shot, COUNT(*) as count").
-		Where("favorite_shot IS NOT NULL AND favorite_shot != ''").
-		Group("favorite_shot").
+		Select("drink3, COUNT(*) as count").
+		Where("drink3 IS NOT NULL AND drink3 != ''").
+		Group("drink3").
 		Order("count DESC").
 		Limit(10).
-		Scan(&shots)
-	stats["popular_shots"] = shots
+		Scan(&drink3)
+	stats["popular_drink3"] = drink3
 
 	return stats, nil
 }

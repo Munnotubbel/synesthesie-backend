@@ -42,26 +42,26 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":                user.ID,
-		"username":          user.Username,
-		"email":             user.Email,
-		"name":              user.Name,
-		"favorite_drink":    user.FavoriteDrink,
-		"favorite_cocktail": user.FavoriteCocktail,
-		"favorite_shot":     user.FavoriteShot,
-		"created_at":        user.CreatedAt,
+		"id":         user.ID,
+		"username":   user.Username,
+		"email":      user.Email,
+		"name":       user.Name,
+		"drink1":     user.Drink1,
+		"drink2":     user.Drink2,
+		"drink3":     user.Drink3,
+		"group":      user.Group,
+		"created_at": user.CreatedAt,
 	})
 }
 
-// UpdateProfile updates the current user's profile
+// UpdateProfile updates the current user's profile (only drink1-3)
 func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
 	var req struct {
-		Name             string `json:"name"`
-		FavoriteDrink    string `json:"favorite_drink"`
-		FavoriteCocktail string `json:"favorite_cocktail"`
-		FavoriteShot     string `json:"favorite_shot"`
+		Drink1 string `json:"drink1"`
+		Drink2 string `json:"drink2"`
+		Drink3 string `json:"drink3"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -70,17 +70,19 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	}
 
 	updates := make(map[string]interface{})
-	if req.Name != "" {
-		updates["name"] = req.Name
+	if req.Drink1 != "" {
+		updates["drink1"] = req.Drink1
 	}
-	if req.FavoriteDrink != "" {
-		updates["favorite_drink"] = req.FavoriteDrink
+	if req.Drink2 != "" {
+		updates["drink2"] = req.Drink2
 	}
-	if req.FavoriteCocktail != "" {
-		updates["favorite_cocktail"] = req.FavoriteCocktail
+	if req.Drink3 != "" {
+		updates["drink3"] = req.Drink3
 	}
-	if req.FavoriteShot != "" {
-		updates["favorite_shot"] = req.FavoriteShot
+
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid fields to update"})
+		return
 	}
 
 	if err := h.userService.UpdateUserProfile(userID.(uuid.UUID), updates); err != nil {
@@ -114,6 +116,17 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 		return
 	}
 
+	// Get user to determine group
+	user, err := h.userService.GetUserByID(userID.(uuid.UUID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve user"})
+		return
+	}
+	userPrice := 200.0
+	if user.Group == "bubble" {
+		userPrice = 35.0
+	}
+
 	// Create a map of event IDs to tickets
 	ticketMap := make(map[uuid.UUID]*models.Ticket)
 	for _, ticket := range userTickets {
@@ -135,7 +148,7 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 			"date_to":          event.DateTo,
 			"time_from":        event.TimeFrom,
 			"time_to":          event.TimeTo,
-			"price":            event.Price,
+			"price":            userPrice,
 			"max_participants": event.MaxParticipants,
 			"available_spots":  availableSpots,
 			"has_ticket":       false,

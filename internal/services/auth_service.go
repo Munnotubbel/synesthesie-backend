@@ -84,7 +84,7 @@ func (s *AuthService) Login(username, password string) (string, string, *models.
 }
 
 // Register creates a new user account
-func (s *AuthService) Register(username, email, password, name string, favoriteDrink, favoriteCocktail, favoriteShot string, inviteCode string) (*models.User, error) {
+func (s *AuthService) Register(username, email, password, name string, drink1, drink2, drink3 string, inviteCode string) (*models.User, error) {
 	// Check if username already exists
 	var existingUser models.User
 	if err := s.db.Where("username = ? OR email = ?", username, email).First(&existingUser).Error; err == nil {
@@ -116,10 +116,11 @@ func (s *AuthService) Register(username, email, password, name string, favoriteD
 		Email:              email,
 		Password:           hashedPassword,
 		Name:               name,
-		FavoriteDrink:      favoriteDrink,
-		FavoriteCocktail:   favoriteCocktail,
-		FavoriteShot:       favoriteShot,
+		Drink1:             drink1,
+		Drink2:             drink2,
+		Drink3:             drink3,
 		RegisteredWithCode: inviteCode,
+		Group:              invite.Group,
 	}
 
 	// Start transaction

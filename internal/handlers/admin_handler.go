@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/csv"
 	"mime"
 	"net/http"
 	"os"
@@ -254,6 +255,7 @@ func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 			"id":            invite.ID,
 			"code":          invite.Code,
 			"status":        invite.Status,
+			"group":         invite.Group,
 			"viewed_at":     invite.ViewedAt,
 			"registered_at": invite.RegisteredAt,
 			"created_at":    invite.CreatedAt,
@@ -283,19 +285,30 @@ func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 // CreateInvite creates a new invite code
 func (h *AdminHandler) CreateInvite(c *gin.Context) {
 	var req struct {
-		Count int `json:"count"`
+		Count int    `json:"count"`
+		Group string `json:"group"` // optional: "bubble"|"guests"
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		req.Count = 1
 	}
-
 	if req.Count <= 0 {
 		req.Count = 1
 	}
 
+	if req.Group != "" && req.Group != "bubble" && req.Group != "guests" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+		return
+	}
+
 	if req.Count == 1 {
-		invite, err := h.inviteService.CreateInviteCode()
+		var invite *models.InviteCode
+		var err error
+		if req.Group == "" {
+			invite, err = h.inviteService.CreateInviteCode()
+		} else {
+			invite, err = h.inviteService.CreateInviteCodeWithGroup(req.Group)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invite code"})
 			return
@@ -304,30 +317,66 @@ func (h *AdminHandler) CreateInvite(c *gin.Context) {
 		c.JSON(http.StatusCreated, gin.H{
 			"message": "Invite code created successfully",
 			"invite": gin.H{
-				"id":   invite.ID,
-				"code": invite.Code,
+				"id":    invite.ID,
+				"code":  invite.Code,
+				"group": invite.Group,
 			},
 		})
-	} else {
-		invites, err := h.inviteService.CreateBulkInviteCodes(req.Count)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		inviteList := make([]gin.H, len(invites))
-		for i, invite := range invites {
-			inviteList[i] = gin.H{
-				"id":   invite.ID,
-				"code": invite.Code,
-			}
-		}
-
-		c.JSON(http.StatusCreated, gin.H{
-			"message": "Invite codes created successfully",
-			"invites": inviteList,
-		})
+		return
 	}
+
+	var invites []*models.InviteCode
+	var err error
+	if req.Group == "" {
+		invites, err = h.inviteService.CreateBulkInviteCodes(req.Count)
+	} else {
+		invites, err = h.inviteService.CreateBulkInviteCodesWithGroup(req.Count, req.Group)
+	}
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	inviteList := make([]gin.H, len(invites))
+	for i, invite := range invites {
+		inviteList[i] = gin.H{
+			"id":    invite.ID,
+			"code":  invite.Code,
+			"group": invite.Group,
+		}
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "Invite codes created successfully",
+		"invites": inviteList,
+	})
+}
+
+// ReassignUserGroup allows admin to change a user's group
+func (h *AdminHandler) ReassignUserGroup(c *gin.Context) {
+	userIDStr := c.Param("id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+	var req struct {
+		Group string `json:"group" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Group != "bubble" && req.Group != "guests" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+		return
+	}
+
+	if err := h.userService.UpdateUserGroup(userID, req.Group); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "User group updated successfully", "group": req.Group})
 }
 
 // DeactivateInvite deactivates an invite code
@@ -376,9 +425,7 @@ func (h *AdminHandler) GetAllUsers(c *gin.Context) {
 			"username":             user.Username,
 			"email":                user.Email,
 			"name":                 user.Name,
-			"favorite_drink":       user.FavoriteDrink,
-			"favorite_cocktail":    user.FavoriteCocktail,
-			"favorite_shot":        user.FavoriteShot,
+			"group":                user.Group,
 			"is_active":            user.IsActive,
 			"registered_with_code": user.RegisteredWithCode,
 			"created_at":           user.CreatedAt,
@@ -430,9 +477,7 @@ func (h *AdminHandler) GetUserDetails(c *gin.Context) {
 			"username":             user.Username,
 			"email":                user.Email,
 			"name":                 user.Name,
-			"favorite_drink":       user.FavoriteDrink,
-			"favorite_cocktail":    user.FavoriteCocktail,
-			"favorite_shot":        user.FavoriteShot,
+			"group":                user.Group,
 			"is_active":            user.IsActive,
 			"registered_with_code": user.RegisteredWithCode,
 			"created_at":           user.CreatedAt,
@@ -650,4 +695,130 @@ func (h *AdminHandler) GetInviteQR(c *gin.Context) {
 	c.Header("Content-Type", "application/pdf")
 	c.Header("Content-Disposition", "attachment; filename=invite_"+inviteID.String()+".pdf")
 	c.Data(http.StatusOK, "application/pdf", pdfBytes)
+}
+
+// ExportInvitesCSV exports not-yet-exported invites as CSV, with group-specific structure
+func (h *AdminHandler) ExportInvitesCSV(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "0"))
+	groupFilter := strings.TrimSpace(c.Query("group")) // optional: "bubble"|"guests"
+	if groupFilter != "" && groupFilter != "bubble" && groupFilter != "guests" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+		return
+	}
+
+	invites, err := h.inviteService.ListUnexportedInvites(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query invites"})
+		return
+	}
+	if len(invites) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "no_invites_to_export"})
+		return
+	}
+
+	// Filter by group if requested
+	filtered := invites
+	if groupFilter != "" {
+		tmp := make([]*models.InviteCode, 0, len(invites))
+		for _, inv := range invites {
+			if inv.Group == groupFilter {
+				tmp = append(tmp, inv)
+			}
+		}
+		filtered = tmp
+		if len(filtered) == 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "no_invites_to_export"})
+			return
+		}
+	}
+
+	// Build CSV
+	buf := &bytes.Buffer{}
+	writer := csv.NewWriter(buf)
+
+	base := h.adminService.GetConfig().FrontendURL
+	if !strings.HasSuffix(base, "/") {
+		base = base + "/"
+	}
+	base = base + "register?invite="
+
+	// Partition by group
+	bubble := make([]*models.InviteCode, 0)
+	guests := make([]*models.InviteCode, 0)
+	for _, inv := range filtered {
+		if inv.Group == "bubble" {
+			bubble = append(bubble, inv)
+		} else {
+			guests = append(guests, inv)
+		}
+	}
+
+	ids := make([]uuid.UUID, 0, len(filtered))
+
+	// Write bubble section
+	if len(bubble) > 0 {
+		_ = writer.Write([]string{"Public-ID", "QR-Link"})
+		for _, inv := range bubble {
+			qr := base + inv.Code
+			pub := ""
+			if inv.PublicID != nil {
+				pub = *inv.PublicID
+			}
+			_ = writer.Write([]string{pub, qr})
+			ids = append(ids, inv.ID)
+		}
+	}
+
+	// If both present, add empty line separator
+	if len(bubble) > 0 && len(guests) > 0 {
+		_ = writer.Write([]string{})
+	}
+
+	// Write guests section
+	if len(guests) > 0 {
+		_ = writer.Write([]string{"QR-Link"})
+		for _, inv := range guests {
+			qr := base + inv.Code
+			_ = writer.Write([]string{qr})
+			ids = append(ids, inv.ID)
+		}
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+
+	// Mark exported
+	if err := h.inviteService.MarkInvitesExported(ids); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark invites exported"})
+		return
+	}
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=invites_export.csv")
+	c.Data(http.StatusOK, "text/csv", buf.Bytes())
+}
+
+// UpdateUserActive allows admin to set is_active for a user
+func (h *AdminHandler) UpdateUserActive(c *gin.Context) {
+	userIDStr := c.Param("id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+		return
+	}
+	var req struct {
+		IsActive bool `json:"is_active" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.userService.UpdateUserActive(userID, req.IsActive); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "User active status updated", "is_active": req.IsActive})
 }

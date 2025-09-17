@@ -79,6 +79,7 @@ func (h *PublicHandler) ViewInviteCode(c *gin.Context) {
 		"valid":   true,
 		"code":    invite.Code,
 		"status":  "viewed",
+		"group":   invite.Group,
 		"message": "Invite code has been marked as viewed. You can now proceed with registration.",
 	})
 }
@@ -100,6 +101,7 @@ func (h *PublicHandler) CheckInviteCode(c *gin.Context) {
 		"valid":  true,
 		"code":   invite.Code,
 		"status": invite.Status,
+		"group":  invite.Group,
 	}
 
 	// Add appropriate message based on status

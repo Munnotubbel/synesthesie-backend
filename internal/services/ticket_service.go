@@ -45,6 +45,16 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 		return nil, nil, errors.New("event is fully booked")
 	}
 
+	// Determine base price based on user group
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, nil, errors.New("user not found")
+	}
+	basePrice := 200.0
+	if user.Group == "bubble" {
+		basePrice = 35.0
+	}
+
 	// Get pickup service price
 	pickupPrice := 0.0
 	if includesPickup {
@@ -59,7 +69,7 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 		UserID:         userID,
 		EventID:        eventID,
 		Status:         "pending",
-		Price:          event.Price,
+		Price:          basePrice,
 		IncludesPickup: includesPickup,
 		PickupPrice:    pickupPrice,
 		PickupAddress:  pickupAddress,
@@ -98,7 +108,7 @@ func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event
 					Name:        stripe.String(fmt.Sprintf("Ticket für %s", event.Name)),
 					Description: stripe.String(fmt.Sprintf("Event am %s", event.DateFrom.Format("02.01.2006"))),
 				},
-				UnitAmount: stripe.Int64(int64(event.Price * 100)), // Convert to cents
+				UnitAmount: stripe.Int64(int64(ticket.Price * 100)), // Use ticket price (group-based)
 			},
 			Quantity: stripe.Int64(1),
 		},

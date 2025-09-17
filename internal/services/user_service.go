@@ -44,10 +44,9 @@ func (s *UserService) GetUserByUsername(username string) (*models.User, error) {
 func (s *UserService) UpdateUserProfile(userID uuid.UUID, updates map[string]interface{}) error {
 	// Only allow updating certain fields
 	allowedFields := map[string]bool{
-		"name":              true,
-		"favorite_drink":    true,
-		"favorite_cocktail": true,
-		"favorite_shot":     true,
+		"drink1": true,
+		"drink2": true,
+		"drink3": true,
 	}
 
 	// Filter updates to only allowed fields
@@ -71,6 +70,33 @@ func (s *UserService) UpdateUserProfile(userID uuid.UUID, updates map[string]int
 		return errors.New("user not found")
 	}
 
+	return nil
+}
+
+// UpdateUserGroup updates the user's group to 'bubble' or 'guests'
+func (s *UserService) UpdateUserGroup(userID uuid.UUID, group string) error {
+	if group != "bubble" && group != "guests" {
+		return errors.New("invalid group; must be 'bubble' or 'guests'")
+	}
+	result := s.db.Model(&models.User{}).Where("id = ?", userID).Update("group", group)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("user not found")
+	}
+	return nil
+}
+
+// UpdateUserActive sets is_active
+func (s *UserService) UpdateUserActive(userID uuid.UUID, isActive bool) error {
+	result := s.db.Model(&models.User{}).Where("id = ?", userID).Update("is_active", isActive)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("user not found")
+	}
 	return nil
 }
 

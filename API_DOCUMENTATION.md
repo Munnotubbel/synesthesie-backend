@@ -45,8 +45,25 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 - Auth: Admin erforderlich.
 - Response: `application/pdf` (Download)
 
+#### `GET /api/v1/admin/invites/export.csv`
+- Beschreibung: Exportiert alle noch nicht exportierten Einladungscodes als CSV-Tabelle für den Druckdienstleister.
+- Auth: Admin erforderlich.
+- Query-Parameter:
+  - `limit` (optional): Max. Anzahl der Datensätze in diesem Export.
+- CSV-Spalten:
+  - `ID` (Datenbank-ID des Codes)
+  - `QR-Link` (kompletter Link: `FRONTEND_URL/register?invite=<code>`)
+- Verhalten:
+  - Es werden nur Codes exportiert, deren Feld `exported_at` noch leer ist.
+  - Nach erfolgreichem Export werden alle enthaltenen Codes in der Datenbank mit `exported_at=NOW()` markiert und erscheinen bei zukünftigen Exporten nicht mehr.
+- Response (200 OK):
+  - `text/csv` als Datei-Download. Falls keine Daten vorliegen: `{ "status": "no_invites_to_export" }`.
+
 InviteCode Felder (Erweiterung):
 - `qr_generated` (bool): true, sobald die PDF einmal erzeugt/heruntergeladen wurde.
+- `exported_at` (timestamp|null): Zeitpunkt des CSV-Exports für den Druck.
+- `group` (string): Kategorie des Codes, entweder `bubble` oder `guests`.
+  - Codeschema: `guests` → zufällige UUID (z. B. v4), `bubble` → fortlaufend nummeriert `1..1000`.
 
 ---
 
@@ -107,7 +124,7 @@ InviteCode Felder (Erweiterung):
         "date_to": "time.Time",
         "time_from": "string (Format: HH:MM)",
         "time_to": "string (Format: HH:MM)",
-        "price": "float64",
+        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0
         "max_participants": "int",
         "available_spots": "int"
       }
@@ -129,6 +146,7 @@ InviteCode Felder (Erweiterung):
     "valid": "boolean",
     "code": "string",
     "status": "string", // "new", "viewed", "registered", "inactive"
+    "group": "string",  // "bubble" | "guests"
     "message": "string"
   }
   ```
@@ -142,6 +160,7 @@ InviteCode Felder (Erweiterung):
     "valid": true,
     "code": "string",
     "status": "viewed",
+    "group": "string",  // "bubble" | "guests"
     "message": "Invite code has been marked as viewed. You can now proceed with registration."
   }
   ```
@@ -166,9 +185,9 @@ InviteCode Felder (Erweiterung):
     "email": "string (gültiges E-Mail-Format)",
     "password": "string (min: 8, muss komplex sein)",
     "name": "string",
-    "favorite_drink": "string (optional)",
-    "favorite_cocktail": "string (optional)",
-    "favorite_shot": "string (optional)"
+    "drink1": "string (optional)",
+    "drink2": "string (optional)",
+    "drink3": "string (optional)"
   }
   ```
 - **Response Body (400 Bad Request) - Code nicht angesehen:**
@@ -185,7 +204,8 @@ InviteCode Felder (Erweiterung):
       "id": "uuid",
       "username": "string",
       "email": "string",
-      "name": "string"
+      "name": "string",
+      "group": "bubble" | "guests"
     }
   }
   ```
@@ -209,7 +229,8 @@ InviteCode Felder (Erweiterung):
       "username": "string",
       "email": "string",
       "name": "string",
-      "is_admin": "boolean"
+      "is_admin": "boolean",
+      "group": "bubble" | "guests"
     }
   }
   ```
@@ -254,9 +275,10 @@ InviteCode Felder (Erweiterung):
     "username": "string",
     "email": "string",
     "name": "string",
-    "favorite_drink": "string",
-    "favorite_cocktail": "string",
-    "favorite_shot": "string",
+    "drink1": "string",
+    "drink2": "string",
+    "drink3": "string",
+    "group": "bubble" | "guests",
     "created_at": "time.Time"
   }
   ```
@@ -266,10 +288,9 @@ InviteCode Felder (Erweiterung):
 - **Request Body (alle Felder optional):**
   ```json
   {
-    "name": "string",
-    "favorite_drink": "string",
-    "favorite_cocktail": "string",
-    "favorite_shot": "string"
+    "drink1": "string",
+    "drink2": "string",
+    "drink3": "string"
   }
   ```
 - **Response Body (200 OK):**
@@ -457,6 +478,7 @@ InviteCode Felder (Erweiterung):
         "id": "uuid",
         "code": "string",
         "status": "string", // "new", "viewed", "registered", "inactive"
+        "group": "string",  // "bubble" | "guests"
         "viewed_at": "time.Time",
         "registered_at": "time.Time",
         "created_at": "time.Time",
@@ -476,7 +498,8 @@ InviteCode Felder (Erweiterung):
 - **Request Body:**
   ```json
   {
-    "count": "int (optional, default: 1)"
+    "count": "int (optional, default: 1)",
+    "group": "string (optional: 'bubble'|'guests'; default: 'guests')"
   }
   ```
 - **Response Body (201 Created):**
@@ -484,12 +507,12 @@ InviteCode Felder (Erweiterung):
   // Für count = 1
   {
     "message": "Invite code created successfully",
-    "invite": { "id": "uuid", "code": "string" }
+    "invite": { "id": "uuid", "code": "string", "group": "string" }
   }
   // Für count > 1
   {
     "message": "Invite codes created successfully",
-    "invites": [ { "id": "uuid", "code": "string" } ]
+    "invites": [ { "id": "uuid", "code": "string", "group": "string" } ]
   }
   ```
 
@@ -512,6 +535,7 @@ InviteCode Felder (Erweiterung):
         "username": "string",
         "email": "string",
         "name": "string",
+        "group": "string",
         "is_active": "boolean",
         "created_at": "time.Time"
         // ... weitere Benutzer-Details
@@ -543,6 +567,22 @@ InviteCode Felder (Erweiterung):
   ```
 
 ##### `PUT /admin/users/:id/password`
+##### `PUT /admin/users/:id/active`
+- **Beschreibung:** Setzt den Aktiv-Status eines Benutzers.
+- **Request Body:**
+  ```json
+  { "is_active": true }
+  ```
+- **Response Body (200 OK):** `{"message": "User active status updated", "is_active": true}`
+
+##### `PUT /admin/users/:id/group`
+- **Beschreibung:** Weist einem Benutzer eine Gruppe zu oder ändert sie.
+- **Request Body:**
+  ```json
+  { "group": "bubble" | "guests" }
+  ```
+- **Response Body (200 OK):** `{"message": "User group updated successfully", "group": "bubble"}`
+
 - **Beschreibung:** Setzt das Passwort eines Benutzers zurück.
 - **Response Body (200 OK):**
   ```json

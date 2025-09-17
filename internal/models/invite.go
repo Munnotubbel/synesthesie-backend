@@ -1,8 +1,6 @@
 package models
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,12 +16,15 @@ const (
 
 type InviteCode struct {
 	ID           uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
+	PublicID     *string    `gorm:"uniqueIndex" json:"public_id,omitempty"`
 	Code         string     `gorm:"uniqueIndex;not null" json:"code"`
 	Status       string     `gorm:"type:varchar(20);not null;default:'new'" json:"status"`
+	Group        string     `gorm:"type:varchar(20);not null;default:'guests'" json:"group"`
 	RegisteredBy *uuid.UUID `gorm:"type:uuid" json:"registered_by,omitempty"`
 	ViewedAt     *time.Time `json:"viewed_at,omitempty"`
 	RegisteredAt *time.Time `json:"registered_at,omitempty"`
 	QRGenerated  bool       `gorm:"not null;default:false" json:"qr_generated"`
+	ExportedAt   *time.Time `json:"exported_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 
@@ -35,26 +36,8 @@ func (i *InviteCode) BeforeCreate(tx *gorm.DB) error {
 	if i.ID == uuid.Nil {
 		i.ID = uuid.New()
 	}
-
-	// Generate secure random code if not provided
-	if i.Code == "" {
-		code, err := generateSecureCode(32)
-		if err != nil {
-			return err
-		}
-		i.Code = code
-	}
-
+	// Code, Group und PublicID werden vom Service gesetzt
 	return nil
-}
-
-// generateSecureCode generates a cryptographically secure random code
-func generateSecureCode(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
 }
 
 // MarkAsViewed marks the invite code as viewed
