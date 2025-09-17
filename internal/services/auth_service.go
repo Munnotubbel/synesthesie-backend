@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,16 +18,20 @@ import (
 )
 
 type AuthService struct {
-	db    *gorm.DB
-	redis *redis.Client
-	cfg   *config.Config
+	db         *gorm.DB
+	redis      *redis.Client
+	cfg        *config.Config
+	smsService *SMSService
 }
 
-func NewAuthService(db *gorm.DB, redis *redis.Client, cfg *config.Config) *AuthService {
+func (s *AuthService) GetConfig() *config.Config { return s.cfg }
+
+func NewAuthService(db *gorm.DB, redis *redis.Client, cfg *config.Config, sms *SMSService) *AuthService {
 	return &AuthService{
-		db:    db,
-		redis: redis,
-		cfg:   cfg,
+		db:         db,
+		redis:      redis,
+		cfg:        cfg,
+		smsService: sms,
 	}
 }
 
@@ -48,15 +53,9 @@ func (s *AuthService) Login(username, password string) (string, string, *models.
 	}
 
 	// Verify password
-	log.Printf("DEBUG: Checking password for user %s", username)
-	log.Printf("DEBUG: Password from request: %s", password)
-	log.Printf("DEBUG: Password hash from DB: %s", user.Password)
-
 	if !crypto.CheckPassword(password, user.Password) {
-		log.Printf("DEBUG: Password check failed!")
 		return "", "", nil, errors.New("invalid credentials")
 	}
-	log.Printf("DEBUG: Password check passed!")
 
 	// Generate tokens
 	accessToken, err := jwtpkg.GenerateToken(user.ID.String(), jwtpkg.AccessToken, s.cfg.JWTSecret, s.cfg.JWTAccessTokenDuration)
@@ -83,8 +82,8 @@ func (s *AuthService) Login(username, password string) (string, string, *models.
 	return accessToken, refreshToken, &user, nil
 }
 
-// Register creates a new user account
-func (s *AuthService) Register(username, email, password, name string, drink1, drink2, drink3 string, inviteCode string) (*models.User, error) {
+// Register creates a new user account and (optionally) triggers SMS verification
+func (s *AuthService) Register(username, email, password, name, mobile string, drink1, drink2, drink3 string, inviteCode string) (*models.User, error) {
 	// Check if username already exists
 	var existingUser models.User
 	if err := s.db.Where("username = ? OR email = ?", username, email).First(&existingUser).Error; err == nil {
@@ -116,6 +115,8 @@ func (s *AuthService) Register(username, email, password, name string, drink1, d
 		Email:              email,
 		Password:           hashedPassword,
 		Name:               name,
+		Mobile:             mobile,
+		MobileVerified:     !s.cfg.SMSVerificationEnabled, // auto-verified if SMS disabled
 		Drink1:             drink1,
 		Drink2:             drink2,
 		Drink3:             drink3,
@@ -139,8 +140,102 @@ func (s *AuthService) Register(username, email, password, name string, drink1, d
 		return nil, err
 	}
 
+	// Optionally create phone verification and send SMS
+	if s.cfg.SMSVerificationEnabled {
+		if err := s.createOrResendVerification(tx, user.ID, user.Mobile); err != nil {
+			log.Printf("WARN: failed to send verification sms: %v", err)
+		}
+	}
+
 	tx.Commit()
 	return user, nil
+}
+
+func (s *AuthService) generateCode() string {
+	// 6-stellige numerische Codes
+	return fmt.Sprintf("%06d", rand.Intn(1000000))
+}
+
+func (s *AuthService) createOrResendVerification(tx *gorm.DB, userID uuid.UUID, mobile string) error {
+	if s.smsService == nil {
+		return errors.New("sms service unavailable")
+	}
+	// invalidate previous active codes (optional)
+	_ = tx.Model(&models.PhoneVerification{}).
+		Where("user_id = ? AND consumed_at IS NULL", userID).
+		Update("consumed_at", time.Now()).Error
+
+	code := s.generateCode()
+	pv := &models.PhoneVerification{
+		UserID:    userID,
+		Mobile:    mobile,
+		Code:      code,
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+		Attempts:  0,
+	}
+	if err := tx.Create(pv).Error; err != nil {
+		return err
+	}
+	body := fmt.Sprintf("Dein Synesthesie Verifizierungscode: %s", code)
+	return s.smsService.SendSMS(mobile, body)
+}
+
+// VerifyMobile verifies the code and marks the user's mobile as verified
+func (s *AuthService) VerifyMobile(userID uuid.UUID, code string) error {
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return errors.New("user not found")
+	}
+	if user.MobileVerified {
+		return nil
+	}
+
+	var pv models.PhoneVerification
+	err := s.db.Where("user_id = ? AND consumed_at IS NULL AND expires_at > ?", userID, time.Now()).
+		Order("created_at DESC").First(&pv).Error
+	if err != nil {
+		return errors.New("no valid verification code found")
+	}
+
+	if pv.Code != code {
+		_ = s.db.Model(&pv).Update("attempts", pv.Attempts+1).Error
+		return errors.New("invalid verification code")
+	}
+
+	now := time.Now()
+	if err := s.db.Model(&pv).Updates(map[string]interface{}{
+		"consumed_at": now,
+		"attempts":    pv.Attempts + 1,
+	}).Error; err != nil {
+		return err
+	}
+
+	return s.db.Model(&user).Update("mobile_verified", true).Error
+}
+
+// ResendMobileVerification sends a new verification code to the user's mobile
+func (s *AuthService) ResendMobileVerification(userID uuid.UUID) error {
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return errors.New("user not found")
+	}
+	if user.Mobile == "" {
+		return errors.New("no mobile number on file")
+	}
+	if user.MobileVerified {
+		return errors.New("mobile already verified")
+	}
+	if !s.cfg.SMSVerificationEnabled {
+		return nil
+	}
+
+	tx := s.db.Begin()
+	if err := s.createOrResendVerification(tx, user.ID, user.Mobile); err != nil {
+		tx.Rollback()
+		return err
+	}
+	tx.Commit()
+	return nil
 }
 
 // RefreshToken generates new access token from refresh token

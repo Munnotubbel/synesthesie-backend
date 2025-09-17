@@ -183,8 +183,9 @@ InviteCode Felder (Erweiterung):
     "invite_code": "string (muss Status 'viewed' haben)",
     "username": "string (min: 3, max: 30)",
     "email": "string (gültiges E-Mail-Format)",
-    "password": "string (min: 8, muss komplex sein)",
+    "password": "string (min: 12, komplex)",
     "name": "string",
+    "mobile": "string (optional)",
     "drink1": "string (optional)",
     "drink2": "string (optional)",
     "drink3": "string (optional)"
@@ -275,6 +276,7 @@ InviteCode Felder (Erweiterung):
     "username": "string",
     "email": "string",
     "name": "string",
+    "mobile": "string",
     "drink1": "string",
     "drink2": "string",
     "drink3": "string",
@@ -285,18 +287,28 @@ InviteCode Felder (Erweiterung):
 
 #### `PUT /user/profile`
 - **Beschreibung:** Aktualisiert die Profildaten des aktuellen Benutzers.
+- **Verhalten bei `mobile`:**
+  - Wenn `SMS_VERIFICATION_ENABLED=true`: Die neue Nummer wird gespeichert, `mobile_verified=false` gesetzt und ein Verifizierungscode per SMS versendet. Response enthält Hinweis auf Verifizierung.
+  - Wenn `SMS_VERIFICATION_ENABLED=false`: Die neue Nummer wird direkt übernommen, `mobile_verified` bleibt/ist true.
 - **Request Body (alle Felder optional):**
   ```json
   {
+    "mobile": "string",
     "drink1": "string",
     "drink2": "string",
     "drink3": "string"
   }
   ```
+- **Responses:**
+  - 200 OK (Verifizierung aktiv): `{ "message": "Profile updated. Please verify your new mobile number." }`
+  - 200 OK (Verifizierung aus): `{ "message": "Profile updated successfully" }`
+
+#### `GET /user/settings/pickup-price`
+- **Beschreibung:** Liefert den aktuellen Preis für den Abholservice für Benutzeransichten.
 - **Response Body (200 OK):**
   ```json
   {
-    "message": "Profile updated successfully"
+    "price": "float64"
   }
   ```
 
@@ -593,7 +605,8 @@ InviteCode Felder (Erweiterung):
   ```
 
 ---
-#### Preis-Management
+
+### **Preis-Management (Admin)**
 
 ##### `GET /admin/settings/pickup-price`
 - **Beschreibung:** Ruft den Preis für den Abholservice ab.
@@ -670,3 +683,15 @@ Der neue Einladungscode-Workflow funktioniert wie folgt:
 - `inactive`: Vom Admin deaktiviert
 
 **Wichtig:** Ein Code kann nur einmal "angesehen" werden. Schließt der Benutzer den Browser oder startet das Gerät neu, ist die Chance vertan.
+
+### Admin – Pickup-Export
+
+#### `GET /api/v1/admin/pickups/export.csv`
+- Beschreibung: Exportiert alle Tickets mit gebuchtem Abholservice als CSV.
+- Query-Parameter:
+  - `event_id` (optional, UUID): Filtert auf ein Event.
+  - `status` (optional, Default `paid`): `paid` oder `all` (inkl. `pending`).
+- CSV-Spalten: `Name`, `Mobile`, `Pickup-Address`
+- Response:
+  - 200 OK `text/csv` Download.
+  - 200 OK `{ "status": "no_pickups" }`, wenn keine Einträge.

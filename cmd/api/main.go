@@ -45,7 +45,8 @@ func main() {
 	defer redisClient.Close()
 
 	// Initialize services
-	authService := services.NewAuthService(db, redisClient, cfg)
+	smsService := services.NewSMSService(cfg)
+	authService := services.NewAuthService(db, redisClient, cfg, smsService)
 	userService := services.NewUserService(db)
 	eventService := services.NewEventService(db)
 	inviteService := services.NewInviteService(db)
@@ -105,7 +106,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService, userService, inviteService, emailService)
-	userHandler := handlers.NewUserHandler(userService, eventService, ticketService)
+	userHandler := handlers.NewUserHandler(userService, eventService, ticketService, authService)
 	// wire asset/storage into userHandler (exported fields)
 	userHandler.AssetService = assetService
 	userHandler.StorageService = storageService
@@ -136,6 +137,9 @@ func main() {
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/refresh", authHandler.RefreshToken)
 			auth.POST("/logout", middleware.Auth(authService), authHandler.Logout)
+			// Mobile verification (requires auth)
+			auth.POST("/verify-mobile", middleware.Auth(authService), authHandler.VerifyMobile)
+			auth.POST("/verify-mobile/resend", middleware.Auth(authService), authHandler.ResendMobileVerification)
 		}
 
 		// User routes
@@ -149,6 +153,7 @@ func main() {
 			user.POST("/tickets", userHandler.BookTicket)
 			user.DELETE("/tickets/:id", userHandler.CancelTicket)
 			user.GET("/assets/:id/download", userHandler.DownloadAsset)
+			user.GET("/settings/pickup-price", userHandler.GetPickupServicePrice)
 		}
 
 		// Admin routes
@@ -181,6 +186,9 @@ func main() {
 			// Service price management
 			admin.GET("/settings/pickup-price", adminHandler.GetPickupServicePrice)
 			admin.PUT("/settings/pickup-price", adminHandler.UpdatePickupServicePrice)
+
+			// Pickup export
+			admin.GET("/pickups/export.csv", adminHandler.ExportPickupCSV)
 
 			// Asset upload + sync
 			admin.POST("/assets/upload", adminHandler.UploadAsset)

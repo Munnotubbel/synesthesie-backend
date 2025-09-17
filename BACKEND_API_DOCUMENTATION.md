@@ -247,6 +247,27 @@ InviteCode Felder (Erweiterung):
 
 ---
 
+### Auth – SMS-Verifizierung
+
+#### `POST /auth/register`
+- Erweitert um Pflichtfeld `mobile` (E.164, z. B. `+491701234567`).
+- Response enthält Hinweis, dass die Mobilnummer verifiziert werden muss.
+
+#### `POST /auth/verify-mobile` (authentifiziert)
+- Body: `{ "code": "string" }` (6-stellig)
+- Verifiziert die Mobilnummer des eingeloggten Users.
+- Response: `{ "message": "Mobile verified" }`
+
+#### `POST /auth/verify-mobile/resend` (authentifiziert)
+- Sendet einen neuen Code an die beim User hinterlegte Mobilnummer.
+- Response: `{ "message": "Verification code sent" }`
+
+Benutzerfelder erweitert:
+- `mobile`: string
+- `mobile_verified`: boolean
+
+---
+
 ### **Benutzer-Endpunkte (`/user`)**
 **Alle Endpunkte in diesem Abschnitt erfordern eine Authentifizierung.**
 
@@ -259,6 +280,7 @@ InviteCode Felder (Erweiterung):
     "username": "string",
     "email": "string",
     "name": "string",
+    "mobile": "string",
     "drink1": "string",
     "drink2": "string",
     "drink3": "string",
@@ -268,14 +290,10 @@ InviteCode Felder (Erweiterung):
   ```
 
 #### `PUT /user/profile`
-- **Beschreibung:** Aktualisiert die Profildaten des aktuellen Benutzers.
+- **Beschreibung:** Aktualisiert Profildaten (nur `mobile`, `drink1-3`).
 - **Request Body (alle Felder optional):**
   ```json
-  {
-    "drink1": "string",
-    "drink2": "string",
-    "drink3": "string"
-  }
+  { "mobile": "string", "drink1": "string", "drink2": "string", "drink3": "string" }
   ```
 - **Response Body (200 OK):**
   ```json
@@ -587,80 +605,19 @@ InviteCode Felder (Erweiterung):
     "price": "float64"
   }
   ```
-- **Response Body (200 OK):**
-  ```json
-  {
-    "message": "Pickup service price updated successfully",
-    "price": "float64"
-  }
-  ```
+- **Response Body (200 OK):** `{"message": "Pickup price updated successfully"}`
 
 ---
 
-### **Stripe Webhook**
-
-#### `POST /stripe/webhook`
-- **Beschreibung:** Empfängt und verarbeitet Ereignisse von Stripe (z.B. erfolgreiche Zahlungen).
-- **Request Body:** `stripe.Event` Objekt (wird von Stripe gesendet).
-- **Response Body (200 OK):**
-  ```json
-  {
-    "received": true
-  }
-  ```
+### Admin: Pickup-Export CSV
+- `GET /api/v1/admin/pickups/export.csv`
+- Query: `event_id` (optional), `status` (paid|all; default paid)
+- CSV: `Name, Mobile, Pickup-Address`
+- Liefert 200 `text/csv` oder `{ "status": "no_pickups" }` bei keinen Daten.
 
 ---
 
-## **Einladungscode-Workflow**
-
-Der neue Einladungscode-Workflow funktioniert wie folgt:
-
-### **1. QR-Code scannen**
-- Benutzer scannt einen QR-Code, der eine URL mit dem Einladungscode enthält (z.B. `https://synesthesie.de/register?invite=ABC123`)
-
-### **2. Code als "angesehen" markieren**
-- Das Frontend ruft automatisch `POST /public/invite/:code/view` auf
-- Der Code wird **einmalig** von "new" auf "viewed" gesetzt
-- Jeder weitere Aufruf dieses Endpunkts schlägt fehl
-
-### **3. Registrierung**
-- Benutzer kann sich nur mit Codes im Status "viewed" registrieren
-- Nach erfolgreicher Registrierung wird der Code auf "registered" gesetzt
-
-### **Status-Übersicht:**
-- `new`: Frisch erstellt, noch nicht aufgerufen
-- `viewed`: Einmal aufgerufen, bereit für Registrierung
-- `registered`: Für Registrierung verwendet
-- `inactive`: Vom Admin deaktiviert
-
-**Wichtig:** Ein Code kann nur einmal "angesehen" werden. Schließt der Benutzer den Browser oder startet das Gerät neu, ist die Chance vertan.
-
----
-
-### Invite QR-Codes und CSV-Export
-
-#### `GET /api/v1/admin/invites/:id/qr.pdf`
-- Beschreibung: Generiert eine druckfähige PDF mit QR-Code für den Invite-Link `FRONTEND_URL/register?invite=<code>` und markiert den Invite als erstellt (`qr_generated=true`).
-- Auth: Admin erforderlich.
-- Response: `application/pdf` (Download)
-
-#### `GET /api/v1/admin/invites/export.csv`
-- Beschreibung: Exportiert alle noch nicht exportierten Einladungscodes als CSV-Tabelle (für Druckdienstleister).
-- Auth: Admin erforderlich.
-- Query-Parameter:
-  - `limit` (optional): Max. Anzahl der Datensätze im Export.
-- CSV-Spalten:
-  - `ID` (Datenbank-ID des Codes)
-  - `QR-Link` (kompletter Link: `FRONTEND_URL/register?invite=<code>`)
-- Verhalten:
-  - Es werden nur Codes exportiert, bei denen `exported_at` NULL ist.
-  - Nach erfolgreichem Export werden alle exportierten Codes mit `exported_at=NOW()` markiert und zukünftig nicht erneut exportiert.
-- Response:
-  - 200 OK: `text/csv` als Datei-Download.
-  - 200 OK (leer): `{ "status": "no_invites_to_export" }` wenn keine Codes anstehen.
-
-InviteCode Felder (Erweiterung):
-- `qr_generated` (bool): erstellt/abgerufen.
-- `exported_at` (timestamp|null): Zeitpunkt des CSV-Exports.
- - `group` (string): Kategorie des Codes, entweder `bubble` oder `guests`.
- - Codeschema: `guests` → zufällige UUID (z. B. v4), `bubble` → fortlaufend `1..1000` mit globalem Zähler.
+### Profil-Update (`PUT /user/profile`)
+- `mobile`-Änderung:
+  - Bei `SMS_VERIFICATION_ENABLED=true`: setzt `mobile_verified=false` und sendet Code; Response-Hinweis zur Verifizierung.
+  - Bei `SMS_VERIFICATION_ENABLED=false`: übernimmt die Nummer direkt ohne Verifizierung.

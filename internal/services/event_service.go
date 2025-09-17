@@ -22,6 +22,31 @@ func (s *EventService) GetDB() *gorm.DB {
 	return s.db
 }
 
+// GetTurnoverByEventIDs returns a map[eventID]turnover (sum of total_amount for paid tickets)
+func (s *EventService) GetTurnoverByEventIDs(eventIDs []uuid.UUID) (map[uuid.UUID]float64, error) {
+	result := make(map[uuid.UUID]float64)
+	if len(eventIDs) == 0 {
+		return result, nil
+	}
+	var rows []struct {
+		EventID uuid.UUID
+		Sum     float64
+	}
+	err := s.db.Model(&models.Ticket{}).
+		Select("event_id, COALESCE(SUM(total_amount), 0) as sum").
+		Where("status = ?", "paid").
+		Where("event_id IN ?", eventIDs).
+		Group("event_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		result[r.EventID] = r.Sum
+	}
+	return result, nil
+}
+
 // CreateEvent creates a new event
 func (s *EventService) CreateEvent(event *models.Event) error {
 	// Validate event dates
@@ -33,8 +58,22 @@ func (s *EventService) CreateEvent(event *models.Event) error {
 		return errors.New("max participants must be greater than 0")
 	}
 
-	if event.Price < 0 {
-		return errors.New("price cannot be negative")
+	if event.AllowedGroup == "" {
+		event.AllowedGroup = "all"
+	}
+	if event.AllowedGroup != "all" && event.AllowedGroup != "guests" && event.AllowedGroup != "bubble" {
+		return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
+	}
+
+	// Default prices if unset
+	if event.GuestsPrice <= 0 {
+		event.GuestsPrice = 200
+	}
+	if event.BubblePrice <= 0 {
+		event.BubblePrice = 35
+	}
+	if event.GuestsPrice < 0 || event.BubblePrice < 0 {
+		return errors.New("prices cannot be negative")
 	}
 
 	return s.db.Create(event).Error
@@ -67,8 +106,16 @@ func (s *EventService) UpdateEvent(eventID uuid.UUID, updates map[string]interfa
 		return errors.New("max participants must be greater than 0")
 	}
 
-	if price, ok := updates["price"].(float64); ok && price < 0 {
-		return errors.New("price cannot be negative")
+	if ag, ok := updates["allowed_group"].(string); ok {
+		if ag != "all" && ag != "guests" && ag != "bubble" {
+			return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
+		}
+	}
+	if gp, ok := updates["guests_price"].(float64); ok && gp < 0 {
+		return errors.New("guests_price cannot be negative")
+	}
+	if bp, ok := updates["bubble_price"].(float64); ok && bp < 0 {
+		return errors.New("bubble_price cannot be negative")
 	}
 
 	result := s.db.Model(&models.Event{}).Where("id = ?", eventID).Updates(updates)

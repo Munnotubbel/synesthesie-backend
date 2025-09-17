@@ -47,6 +47,7 @@ func (s *UserService) UpdateUserProfile(userID uuid.UUID, updates map[string]int
 		"drink1": true,
 		"drink2": true,
 		"drink3": true,
+		"mobile": true,
 	}
 
 	// Filter updates to only allowed fields

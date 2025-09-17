@@ -8,6 +8,7 @@ import (
 
 var (
 	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	e164Regex  = regexp.MustCompile(`^\+?[1-9]\d{7,14}$`)
 )
 
 // ValidateEmail validates email format
@@ -16,9 +17,21 @@ func ValidateEmail(email string) bool {
 	return emailRegex.MatchString(email)
 }
 
+// ValidateE164Mobile validates mobile number in (loosely) E.164 format
+func ValidateE164Mobile(mobile string) bool {
+	mobile = strings.TrimSpace(mobile)
+	return e164Regex.MatchString(mobile)
+}
+
 // ValidatePassword validates password strength
 func ValidatePassword(password string) bool {
-	if len(password) < 8 {
+	// Minimum length
+	if len(password) < 12 {
+		return false
+	}
+
+	// No spaces
+	if strings.Contains(password, " ") {
 		return false
 	}
 
@@ -37,7 +50,7 @@ func ValidatePassword(password string) bool {
 			hasLower = true
 		case unicode.IsDigit(char):
 			hasNumber = true
-		case strings.ContainsRune("@$!%*?&", char):
+		case strings.ContainsRune("@$!%*?&_-#=+^~.", char):
 			hasSpecial = true
 		}
 	}

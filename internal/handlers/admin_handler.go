@@ -52,9 +52,17 @@ func (h *AdminHandler) GetAllEvents(c *gin.Context) {
 		return
 	}
 
+	// Compute turnover for listed events
+	ids := make([]uuid.UUID, 0, len(events))
+	for _, e := range events {
+		ids = append(ids, e.ID)
+	}
+	turnoverMap, _ := h.eventService.GetTurnoverByEventIDs(ids)
+
 	eventList := make([]gin.H, len(events))
 	for i, event := range events {
 		availableSpots := event.GetAvailableSpots(h.eventService.GetDB())
+		turnover := turnoverMap[event.ID]
 		eventList[i] = gin.H{
 			"id":               event.ID,
 			"name":             event.Name,
@@ -65,8 +73,12 @@ func (h *AdminHandler) GetAllEvents(c *gin.Context) {
 			"time_to":          event.TimeTo,
 			"max_participants": event.MaxParticipants,
 			"price":            event.Price,
+			"guests_price":     event.GuestsPrice,
+			"bubble_price":     event.BubblePrice,
+			"allowed_group":    event.AllowedGroup,
 			"is_active":        event.IsActive,
 			"available_spots":  availableSpots,
+			"turnover":         turnover,
 			"created_at":       event.CreatedAt,
 			"updated_at":       event.UpdatedAt,
 		}
@@ -92,7 +104,9 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		TimeFrom        string    `json:"time_from" binding:"required"`
 		TimeTo          string    `json:"time_to" binding:"required"`
 		MaxParticipants int       `json:"max_participants" binding:"required,min=1"`
-		Price           float64   `json:"price" binding:"required,min=0"`
+		AllowedGroup    string    `json:"allowed_group"` // all|guests|bubble, default all
+		GuestsPrice     float64   `json:"guests_price"`  // default 200
+		BubblePrice     float64   `json:"bubble_price"`  // default 35
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -108,8 +122,9 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		TimeFrom:        req.TimeFrom,
 		TimeTo:          req.TimeTo,
 		MaxParticipants: req.MaxParticipants,
-		Price:           req.Price,
-		IsActive:        true,
+		AllowedGroup:    req.AllowedGroup,
+		GuestsPrice:     req.GuestsPrice,
+		BubblePrice:     req.BubblePrice,
 	}
 
 	if err := h.eventService.CreateEvent(event); err != nil {
@@ -140,7 +155,9 @@ func (h *AdminHandler) UpdateEvent(c *gin.Context) {
 		TimeFrom        string    `json:"time_from"`
 		TimeTo          string    `json:"time_to"`
 		MaxParticipants int       `json:"max_participants"`
-		Price           float64   `json:"price"`
+		AllowedGroup    string    `json:"allowed_group"`
+		GuestsPrice     *float64  `json:"guests_price"`
+		BubblePrice     *float64  `json:"bubble_price"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -170,8 +187,14 @@ func (h *AdminHandler) UpdateEvent(c *gin.Context) {
 	if req.MaxParticipants > 0 {
 		updates["max_participants"] = req.MaxParticipants
 	}
-	if req.Price >= 0 {
-		updates["price"] = req.Price
+	if req.AllowedGroup != "" {
+		updates["allowed_group"] = req.AllowedGroup
+	}
+	if req.GuestsPrice != nil {
+		updates["guests_price"] = *req.GuestsPrice
+	}
+	if req.BubblePrice != nil {
+		updates["bubble_price"] = *req.BubblePrice
 	}
 
 	if err := h.eventService.UpdateEvent(eventID, updates); err != nil {
@@ -810,15 +833,96 @@ func (h *AdminHandler) UpdateUserActive(c *gin.Context) {
 		return
 	}
 	var req struct {
-		IsActive bool `json:"is_active" binding:"required"`
+		IsActive *bool `json:"is_active"`
+		Active   *bool `json:"active"` // alias for convenience
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	parseOK := false
+	if err := c.ShouldBindJSON(&req); err == nil {
+		if req.IsActive != nil {
+			parseOK = true
+			if err := h.userService.UpdateUserActive(userID, *req.IsActive); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		} else if req.Active != nil {
+			parseOK = true
+			if err := h.userService.UpdateUserActive(userID, *req.Active); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+	if !parseOK {
+		// Try form or query parameter fallback
+		val := c.PostForm("is_active")
+		if val == "" {
+			val = c.PostForm("active")
+		}
+		if val == "" {
+			val = c.Query("is_active")
+		}
+		if val == "" {
+			val = c.Query("active")
+		}
+		if val == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "is_active boolean required"})
+			return
+		}
+		b, perr := strconv.ParseBool(strings.TrimSpace(val))
+		if perr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid is_active value"})
+			return
+		}
+		if err := h.userService.UpdateUserActive(userID, b); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "User active status updated", "is_active": true})
+}
+
+// ExportPickupCSV exports pickup bookings (paid by default) as CSV: name, mobile, pickup_address
+func (h *AdminHandler) ExportPickupCSV(c *gin.Context) {
+	eventIDStr := strings.TrimSpace(c.Query("event_id"))
+	status := strings.TrimSpace(c.DefaultQuery("status", "paid")) // paid|all
+	var eventID *uuid.UUID
+	if eventIDStr != "" {
+		if id, err := uuid.Parse(eventIDStr); err == nil {
+			eventID = &id
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid event_id"})
+			return
+		}
+	}
+
+	// Use ticket service to list tickets with pickup
+	ts := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
+	tickets, err := ts.ListPickupTickets(eventID, status)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pickup tickets"})
 		return
 	}
-	if err := h.userService.UpdateUserActive(userID, req.IsActive); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if len(tickets) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "no_pickups"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "User active status updated", "is_active": req.IsActive})
+
+	buf := &bytes.Buffer{}
+	w := csv.NewWriter(buf)
+	_ = w.Write([]string{"Name", "Mobile", "Pickup-Address"})
+	for _, t := range tickets {
+		name := t.User.Name
+		mobile := t.User.Mobile
+		addr := t.PickupAddress
+		_ = w.Write([]string{name, mobile, addr})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=pickups.csv")
+	c.Data(http.StatusOK, "text/csv", buf.Bytes())
 }

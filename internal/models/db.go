@@ -71,5 +71,6 @@ func Migrate(db *gorm.DB) error {
 		&RefreshToken{},
 		&SystemSetting{},
 		&Asset{},
+		&PhoneVerification{},
 	)
 }

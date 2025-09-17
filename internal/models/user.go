@@ -13,6 +13,8 @@ type User struct {
 	Email              string    `gorm:"uniqueIndex;not null" json:"email"`
 	Password           string    `gorm:"not null" json:"-"`
 	Name               string    `gorm:"not null" json:"name"`
+	Mobile             string    `json:"mobile"`
+	MobileVerified     bool      `gorm:"default:false" json:"mobile_verified"`
 	Drink1             string    `json:"drink1"`
 	Drink2             string    `json:"drink2"`
 	Drink3             string    `json:"drink3"`

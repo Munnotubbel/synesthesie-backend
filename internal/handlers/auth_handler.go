@@ -33,6 +33,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Email      string `json:"email" binding:"required,email"`
 		Password   string `json:"password" binding:"required,min=8"`
 		Name       string `json:"name" binding:"required"`
+		Mobile     string `json:"mobile" binding:"required"`
 		Drink1     string `json:"drink1"`
 		Drink2     string `json:"drink2"`
 		Drink3     string `json:"drink3"`
@@ -61,6 +62,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Validate mobile
+	if !validation.ValidateE164Mobile(req.Mobile) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mobile number format (use +491234567890)"})
+		return
+	}
+
 	// Validate invite code for registration
 	_, err := h.inviteService.ValidateInviteCodeForRegistration(req.InviteCode)
 	if err != nil {
@@ -74,6 +81,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		req.Email,
 		req.Password,
 		req.Name,
+		req.Mobile,
 		req.Drink1,
 		req.Drink2,
 		req.Drink3,
@@ -85,19 +93,60 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Send registration confirmation email
+	// Send registration email (optional)
 	go h.emailService.SendRegistrationConfirmation(user.Email, user.Name, user.Username, user.Email)
 
+	message := "Registration successful"
+	if h.authService != nil && h.authService.GetConfig() != nil && h.authService.GetConfig().SMSVerificationEnabled {
+		message = "Registration successful. Please verify your mobile number."
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "Registration successful",
+		"message": message,
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"email":    user.Email,
-			"name":     user.Name,
-			"group":    user.Group,
+			"id":              user.ID,
+			"username":        user.Username,
+			"email":           user.Email,
+			"name":            user.Name,
+			"group":           user.Group,
+			"mobile_verified": user.MobileVerified,
 		},
 	})
+}
+
+// VerifyMobile handles mobile verification by code
+func (h *AuthHandler) VerifyMobile(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	var req struct {
+		Code string `json:"code" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.authService.VerifyMobile(userID.(uuid.UUID), req.Code); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Mobile verified"})
+}
+
+// ResendMobileVerification issues a new verification code
+func (h *AuthHandler) ResendMobileVerification(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	if err := h.authService.ResendMobileVerification(userID.(uuid.UUID)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Verification code sent"})
 }
 
 // Login handles user login
@@ -122,12 +171,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"email":    user.Email,
-			"name":     user.Name,
-			"is_admin": user.IsAdmin,
-			"group":    user.Group,
+			"id":              user.ID,
+			"username":        user.Username,
+			"email":           user.Email,
+			"name":            user.Name,
+			"is_admin":        user.IsAdmin,
+			"group":           user.Group,
+			"mobile_verified": user.MobileVerified,
 		},
 	})
 }

@@ -18,16 +18,18 @@ type UserHandler struct {
 	userService    *services.UserService
 	eventService   *services.EventService
 	ticketService  *services.TicketService
+	AuthService    *services.AuthService
 	AssetService   *services.AssetService
 	StorageService *services.StorageService
 	S3Service      *services.S3Service
 }
 
-func NewUserHandler(userService *services.UserService, eventService *services.EventService, ticketService *services.TicketService) *UserHandler {
+func NewUserHandler(userService *services.UserService, eventService *services.EventService, ticketService *services.TicketService, authService *services.AuthService) *UserHandler {
 	return &UserHandler{
 		userService:   userService,
 		eventService:  eventService,
 		ticketService: ticketService,
+		AuthService:   authService,
 	}
 }
 
@@ -46,6 +48,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 		"username":   user.Username,
 		"email":      user.Email,
 		"name":       user.Name,
+		"mobile":     user.Mobile,
 		"drink1":     user.Drink1,
 		"drink2":     user.Drink2,
 		"drink3":     user.Drink3,
@@ -54,7 +57,7 @@ func (h *UserHandler) GetProfile(c *gin.Context) {
 	})
 }
 
-// UpdateProfile updates the current user's profile (only drink1-3)
+// UpdateProfile updates the current user's profile (drink1-3 and mobile)
 func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
@@ -62,6 +65,7 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		Drink1 string `json:"drink1"`
 		Drink2 string `json:"drink2"`
 		Drink3 string `json:"drink3"`
+		Mobile string `json:"mobile"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -80,6 +84,15 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		updates["drink3"] = req.Drink3
 	}
 
+	// Mobile Update Logik
+	if req.Mobile != "" {
+		updates["mobile"] = req.Mobile
+		if h.AuthService != nil && h.AuthService.GetConfig() != nil && h.AuthService.GetConfig().SMSVerificationEnabled {
+			// Setze mobile_verified=false und sende neuen Code
+			updates["mobile_verified"] = false
+		}
+	}
+
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no valid fields to update"})
 		return
@@ -87,6 +100,13 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 
 	if err := h.userService.UpdateUserProfile(userID.(uuid.UUID), updates); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Falls SMS-Verifizierung aktiv und Mobile wurde geändert: Code senden
+	if req.Mobile != "" && h.AuthService != nil && h.AuthService.GetConfig() != nil && h.AuthService.GetConfig().SMSVerificationEnabled {
+		_ = h.AuthService.ResendMobileVerification(userID.(uuid.UUID))
+		c.JSON(http.StatusOK, gin.H{"message": "Profile updated. Please verify your new mobile number."})
 		return
 	}
 
@@ -122,10 +142,6 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve user"})
 		return
 	}
-	userPrice := 200.0
-	if user.Group == "bubble" {
-		userPrice = 35.0
-	}
 
 	// Create a map of event IDs to tickets
 	ticketMap := make(map[uuid.UUID]*models.Ticket)
@@ -135,12 +151,24 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 		}
 	}
 
-	// Build response
-	eventList := make([]gin.H, len(events))
-	for i, event := range events {
-		availableSpots := event.GetAvailableSpots(h.eventService.GetDB())
+	// Build response (respect allowed_group and prices)
+	eventList := make([]gin.H, 0, len(events))
+	for _, event := range events {
+		// Filter by allowed_group
+		if event.AllowedGroup == "guests" && user.Group != "guests" {
+			continue
+		}
+		if event.AllowedGroup == "bubble" && user.Group != "bubble" {
+			continue
+		}
 
-		eventData := gin.H{
+		availableSpots := event.GetAvailableSpots(h.eventService.GetDB())
+		price := event.GuestsPrice
+		if user.Group == "bubble" {
+			price = event.BubblePrice
+		}
+
+		item := gin.H{
 			"id":               event.ID,
 			"name":             event.Name,
 			"description":      event.Description,
@@ -148,23 +176,22 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 			"date_to":          event.DateTo,
 			"time_from":        event.TimeFrom,
 			"time_to":          event.TimeTo,
-			"price":            userPrice,
+			"price":            price,
 			"max_participants": event.MaxParticipants,
 			"available_spots":  availableSpots,
 			"has_ticket":       false,
 		}
 
-		// Check if user has ticket for this event
 		if ticket, exists := ticketMap[event.ID]; exists {
-			eventData["has_ticket"] = true
-			eventData["ticket"] = gin.H{
+			item["has_ticket"] = true
+			item["ticket"] = gin.H{
 				"id":              ticket.ID,
 				"status":          ticket.Status,
 				"includes_pickup": ticket.IncludesPickup,
 			}
 		}
 
-		eventList[i] = eventData
+		eventList = append(eventList, item)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -175,6 +202,16 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 			"total": total,
 		},
 	})
+}
+
+// GetPickupServicePrice exposes the pickup service price to authenticated users
+func (h *UserHandler) GetPickupServicePrice(c *gin.Context) {
+	price, err := h.ticketService.GetPickupServicePrice()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve pickup service price"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"price": price})
 }
 
 // GetUserTickets retrieves all tickets for the current user

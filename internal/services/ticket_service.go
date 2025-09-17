@@ -20,8 +20,31 @@ type TicketService struct {
 }
 
 func NewTicketService(db *gorm.DB, cfg *config.Config) *TicketService {
-	stripe.Key = cfg.StripeSecretKey
+	if cfg != nil {
+		stripe.Key = cfg.StripeSecretKey
+	}
 	return &TicketService{db: db, cfg: cfg}
+}
+
+// ListPickupTickets returns tickets that include pickup service.
+// statusFilter: "paid" (default) | "all" (includes pending & paid)
+func (s *TicketService) ListPickupTickets(eventID *uuid.UUID, statusFilter string) ([]*models.Ticket, error) {
+	query := s.db.Preload("User").Where("includes_pickup = ?", true)
+	if eventID != nil {
+		query = query.Where("event_id = ?", *eventID)
+	}
+	switch statusFilter {
+	case "all":
+		query = query.Where("status IN ?", []string{"pending", "paid"})
+	default:
+		query = query.Where("status = ?", "paid")
+	}
+	// Exclude cancelled/refunded implicitly via status filter above
+	var tickets []*models.Ticket
+	if err := query.Order("created_at DESC").Find(&tickets).Error; err != nil {
+		return nil, err
+	}
+	return tickets, nil
 }
 
 // CreateTicket creates a new ticket for a user
@@ -39,20 +62,30 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 		return nil, nil, errors.New("event not found")
 	}
 
+	// Get user for group
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, nil, errors.New("user not found")
+	}
+
+	// Enforce allowed_group
+	if event.AllowedGroup == "guests" && user.Group != "guests" {
+		return nil, nil, errors.New("event not available for your group")
+	}
+	if event.AllowedGroup == "bubble" && user.Group != "bubble" {
+		return nil, nil, errors.New("event not available for your group")
+	}
+
 	// Check availability
 	availableSpots := event.GetAvailableSpots(s.db)
 	if availableSpots <= 0 {
 		return nil, nil, errors.New("event is fully booked")
 	}
 
-	// Determine base price based on user group
-	var user models.User
-	if err := s.db.First(&user, userID).Error; err != nil {
-		return nil, nil, errors.New("user not found")
-	}
-	basePrice := 200.0
+	// Determine base price based on user group and event prices
+	basePrice := event.GuestsPrice
 	if user.Group == "bubble" {
-		basePrice = 35.0
+		basePrice = event.BubblePrice
 	}
 
 	// Get pickup service price
@@ -98,6 +131,20 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 	return ticket, checkoutSession, nil
 }
 
+// GetPickupServicePrice returns current pickup service price for user-facing endpoints
+func (s *TicketService) GetPickupServicePrice() (float64, error) {
+	var setting models.SystemSetting
+	if err := s.db.Where("key = ?", "pickup_service_price").First(&setting).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 10.00, nil
+		}
+		return 0, err
+	}
+	var price float64
+	_, _ = fmt.Sscanf(setting.Value, "%f", &price)
+	return price, nil
+}
+
 // createStripeCheckoutSession creates a Stripe checkout session
 func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event *models.Event) (*stripe.CheckoutSession, error) {
 	lineItems := []*stripe.CheckoutSessionLineItemParams{
@@ -108,7 +155,7 @@ func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event
 					Name:        stripe.String(fmt.Sprintf("Ticket für %s", event.Name)),
 					Description: stripe.String(fmt.Sprintf("Event am %s", event.DateFrom.Format("02.01.2006"))),
 				},
-				UnitAmount: stripe.Int64(int64(ticket.Price * 100)), // Use ticket price (group-based)
+				UnitAmount: stripe.Int64(int64(ticket.Price * 100)),
 			},
 			Quantity: stripe.Int64(1),
 		},
@@ -123,7 +170,7 @@ func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event
 					Name:        stripe.String("Abhol- und Bringservice"),
 					Description: stripe.String(fmt.Sprintf("Abholadresse: %s", ticket.PickupAddress)),
 				},
-				UnitAmount: stripe.Int64(int64(ticket.PickupPrice * 100)), // Convert to cents
+				UnitAmount: stripe.Int64(int64(ticket.PickupPrice * 100)),
 			},
 			Quantity: stripe.Int64(1),
 		})

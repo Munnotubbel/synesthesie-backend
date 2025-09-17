@@ -93,6 +93,17 @@ type Config struct {
 	AllowedOrigins []string
 	AllowedMethods []string
 	AllowedHeaders []string
+
+	// SMS Verification
+	SMSVerificationEnabled bool
+	SMSProvider            string // "seven" | "clicksend"
+	SMSFrom                string
+	SevenAPIKey            string
+
+	// Legacy ClickSend (optional for backwards compat)
+	ClickSendUsername string
+	ClickSendAPIKey   string
+	ClickSendFrom     string
 }
 
 func New() *Config {
@@ -182,6 +193,17 @@ func New() *Config {
 		AllowedOrigins: getEnvAsSlice("ALLOWED_ORIGINS", []string{"http://localhost:3000", "https://synesthesie.de"}),
 		AllowedMethods: getEnvAsSlice("ALLOWED_METHODS", []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
 		AllowedHeaders: getEnvAsSlice("ALLOWED_HEADERS", []string{"Content-Type", "Authorization"}),
+
+		// SMS Verification
+		SMSVerificationEnabled: getEnv("SMS_VERIFICATION_ENABLED", "true") == "true",
+		SMSProvider:            getEnv("SMS_PROVIDER", "seven"),
+		SMSFrom:                getEnv("SMS_FROM", "Synesthesie"),
+		SevenAPIKey:            getEnv("SEVEN_API_KEY", ""),
+
+		// Legacy ClickSend
+		ClickSendUsername: getEnv("CLICKSEND_USERNAME", ""),
+		ClickSendAPIKey:   getEnv("CLICKSEND_API_KEY", ""),
+		ClickSendFrom:     getEnv("CLICKSEND_FROM", "Synesthesie"),
 	}
 }
 

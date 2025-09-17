@@ -16,10 +16,14 @@ type Event struct {
 	TimeFrom        string    `gorm:"not null" json:"time_from"` // Format: "HH:MM"
 	TimeTo          string    `gorm:"not null" json:"time_to"`   // Format: "HH:MM"
 	MaxParticipants int       `gorm:"not null" json:"max_participants"`
-	Price           float64   `gorm:"not null" json:"price"`
-	IsActive        bool      `gorm:"default:true" json:"is_active"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	// Deprecated: Price bleibt für Alt-Clients erhalten, wird aber nicht mehr für Kaufpreis genutzt
+	Price        float64   `gorm:"not null;default:0" json:"price"`
+	GuestsPrice  float64   `gorm:"not null;default:200" json:"guests_price"`
+	BubblePrice  float64   `gorm:"not null;default:35" json:"bubble_price"`
+	AllowedGroup string    `gorm:"type:varchar(16);not null;default:'all'" json:"allowed_group"` // all|guests|bubble
+	IsActive     bool      `gorm:"default:true" json:"is_active"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 
 	// Relations
 	Tickets []Ticket `gorm:"foreignKey:EventID" json:"tickets,omitempty"`
