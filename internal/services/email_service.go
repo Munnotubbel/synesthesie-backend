@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"html/template"
+	"mime"
 	"net/smtp"
 	"path/filepath"
 
@@ -89,6 +90,12 @@ func (s *EmailService) SendCancellationConfirmation(to string, cancellationData 
 	return s.sendEmail(to, subject, "cancellation_confirmation.html", cancellationData)
 }
 
+// SendEventAnnouncement sends a short announcement for newly created events
+func (s *EmailService) SendEventAnnouncement(to string, data map[string]interface{}) error {
+	subject := "Neues Event bei Synesthesie"
+	return s.sendEmail(to, subject, "event_reminder.html", data)
+}
+
 // sendEmail sends an email using the specified template
 func (s *EmailService) sendEmail(to, subject, templateName string, data interface{}) error {
 	// Get template
@@ -105,11 +112,12 @@ func (s *EmailService) sendEmail(to, subject, templateName string, data interfac
 
 	// Prepare email
 	from := fmt.Sprintf("%s <%s>", s.cfg.SMTPFromName, s.cfg.SMTPFrom)
+	subjectEnc := mime.BEncoding.Encode("UTF-8", subject)
 
 	// Build email message
 	message := fmt.Sprintf("From: %s\r\n", from)
 	message += fmt.Sprintf("To: %s\r\n", to)
-	message += fmt.Sprintf("Subject: %s\r\n", subject)
+	message += fmt.Sprintf("Subject: %s\r\n", subjectEnc)
 	message += "MIME-Version: 1.0\r\n"
 	message += "Content-Type: text/html; charset=\"UTF-8\"\r\n"
 	message += "\r\n"
@@ -185,9 +193,10 @@ func (s *EmailService) sendSMTP(to string, message []byte) error {
 // SendGenericTextEmail sends a plain text email with given subject and body
 func (s *EmailService) SendGenericTextEmail(to, subject, body string) error {
 	from := fmt.Sprintf("%s <%s>", s.cfg.SMTPFromName, s.cfg.SMTPFrom)
+	subjectEnc := mime.BEncoding.Encode("UTF-8", subject)
 	message := fmt.Sprintf("From: %s\r\n", from)
 	message += fmt.Sprintf("To: %s\r\n", to)
-	message += fmt.Sprintf("Subject: %s\r\n", subject)
+	message += fmt.Sprintf("Subject: %s\r\n", subjectEnc)
 	message += "Content-Type: text/plain; charset=\"UTF-8\"\r\n"
 	message += "\r\n"
 	message += body

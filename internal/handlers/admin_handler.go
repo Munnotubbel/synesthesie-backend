@@ -132,6 +132,32 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		return
 	}
 
+	// Optional: E-Mail-Ankündigung an berechtigte Gruppen
+	go func() {
+		// We will load users by allowed_group and send a short announcement using event_reminder template
+		// This uses a lightweight direct DB call through services for simplicity
+		// Fetch recipients
+		var users []*models.User
+		group := strings.ToLower(event.AllowedGroup)
+		q := h.eventService.GetDB().Model(&models.User{}).Where("is_active = ?", true)
+		if group == "guests" || group == "bubble" {
+			q = q.Where("\"group\" = ?", group)
+		}
+		if err := q.Find(&users).Error; err != nil {
+			return
+		}
+		// Build URL
+		eventsURL := strings.TrimRight(h.adminService.GetConfig().FrontendURL, "/") + "/events"
+		email := services.NewEmailService(h.adminService.GetConfig())
+		for _, u := range users {
+			data := map[string]interface{}{
+				"EventName": event.Name,
+				"EventsURL": eventsURL,
+			}
+			_ = email.SendEventAnnouncement(u.Email, data)
+		}
+	}()
+
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Event created successfully",
 		"event":   event,

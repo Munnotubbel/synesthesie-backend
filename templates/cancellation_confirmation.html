@@ -96,17 +96,25 @@
 
             <div class="refund-info">
                 <h3 style="margin-top: 0;">Rückerstattung</h3>
-                <p>{{if .FullRefund}}
-                    Da das Event vom Veranstalter abgesagt wurde, erhältst du den vollen Betrag zurück.
-                {{else}}
-                    Gemäß unseren Stornierungsbedingungen erhältst du 50% des Kaufpreises zurück.
-                {{end}}</p>
+                <p>
+                    {{if .FullRefund}}
+                        Da das Event vom Veranstalter abgesagt wurde, erhältst du den vollen Betrag zurück.
+                    {{else if .PartialRefund}}
+                        Gemäß unseren Stornierungsbedingungen erhältst du {{.RefundAmount}} € (Teilrückerstattung) zurück.
+                    {{else}}
+                        Für diese Stornierung erfolgt keine Rückerstattung. Wenn du dein Ticket auf ein kommendes Event
+                        umbuchen möchtest, schreibe bitte an <a href="mailto:info@synesthesie.de">info@synesthesie.de</a> und
+                        nenne deine Ticket-ID <strong>{{.TicketID}}</strong>.
+                    {{end}}
+                </p>
 
                 <div class="refund-amount">
                     Erstattungsbetrag: {{.RefundAmount}} €
                 </div>
 
+                {{if or .FullRefund .PartialRefund}}
                 <p><small>Die Rückerstattung erfolgt innerhalb von 5-10 Werktagen auf das ursprüngliche Zahlungsmittel.</small></p>
+                {{end}}
             </div>
 
             <p>Schade, dass du nicht dabei sein kannst. Wir hoffen, dich bei einem unserer nächsten Events begrüßen zu dürfen!</p>

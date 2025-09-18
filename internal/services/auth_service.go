@@ -2,12 +2,12 @@ package services
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
+	mrand "math/rand"
 	"time"
 
 	"github.com/google/uuid"
@@ -158,7 +158,7 @@ func (s *AuthService) Register(username, email, password, name, mobile string, d
 
 func (s *AuthService) generateCode() string {
 	// 6-stellige numerische Codes
-	return fmt.Sprintf("%06d", rand.Intn(1000000))
+	return fmt.Sprintf("%06d", mrand.Intn(1000000))
 }
 
 func (s *AuthService) createOrResendVerification(tx *gorm.DB, userID uuid.UUID, mobile string) error {
@@ -329,7 +329,7 @@ func (s *AuthService) RequestPasswordReset(email string) error {
 	}
 	// generate token
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := crand.Read(buf); err != nil {
 		return err
 	}
 	token := hex.EncodeToString(buf)
@@ -342,10 +342,17 @@ func (s *AuthService) RequestPasswordReset(email string) error {
 		return err
 	}
 	// send email if configured
-	if s.email != nil {
-		resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.cfg.FrontendURL, token)
-		_ = s.email.SendPasswordResetLinkEmail(user.Email, user.Name, resetURL)
+	if s.email == nil {
+		log.Printf("Password reset: email service not attached; token=%s", token)
+		return nil
 	}
+	resetURL := fmt.Sprintf("%s/reset-password?token=%s", s.cfg.FrontendURL, token)
+	if err := s.email.SendPasswordResetLinkEmail(user.Email, user.Name, resetURL); err != nil {
+		log.Printf("Password reset email send failed to %s: %v", user.Email, err)
+		// still return nil to avoid user enumeration
+		return nil
+	}
+	log.Printf("Password reset email sent to %s", user.Email)
 	return nil
 }
 

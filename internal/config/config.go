@@ -105,6 +105,11 @@ type Config struct {
 	ClickSendUsername string
 	ClickSendAPIKey   string
 	ClickSendFrom     string
+
+	// Ticket cancellation policy
+	TicketCancellationEnabled       bool
+	TicketCancellationDays          int
+	TicketCancellationRefundPercent int
 }
 
 func New() *Config {
@@ -206,6 +211,11 @@ func New() *Config {
 		ClickSendUsername: getEnv("CLICKSEND_USERNAME", ""),
 		ClickSendAPIKey:   getEnv("CLICKSEND_API_KEY", ""),
 		ClickSendFrom:     getEnv("CLICKSEND_FROM", "Synesthesie"),
+
+		// Ticket cancellation policy
+		TicketCancellationEnabled:       getEnv("TICKET_CANCELLATION_ENABLED", "false") == "true",
+		TicketCancellationDays:          getEnvAsInt("TICKET_CANCELLATION_DAYS", 14),
+		TicketCancellationRefundPercent: getEnvAsInt("TICKET_CANCELLATION_REFUND_PERCENT", 50),
 	}
 }
 

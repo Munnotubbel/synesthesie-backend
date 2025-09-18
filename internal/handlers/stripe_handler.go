@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,12 +18,14 @@ import (
 type StripeHandler struct {
 	ticketService *services.TicketService
 	cfg           *config.Config
+	emailService  *services.EmailService
 }
 
-func NewStripeHandler(ticketService *services.TicketService, cfg *config.Config) *StripeHandler {
+func NewStripeHandler(ticketService *services.TicketService, cfg *config.Config, emailService *services.EmailService) *StripeHandler {
 	return &StripeHandler{
 		ticketService: ticketService,
 		cfg:           cfg,
+		emailService:  emailService,
 	}
 }
 
@@ -89,6 +92,35 @@ func (h *StripeHandler) HandleWebhook(c *gin.Context) {
 			log.Printf("ERROR: Failed to confirm payment for ticket %s: %v", ticketID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to confirm payment"})
 			return
+		}
+
+		// Send confirmation email
+		if h.emailService != nil {
+			ticket, tErr := h.ticketService.GetTicketByID(ticketID)
+			if tErr != nil {
+				log.Printf("WARN: Payment confirmed but failed to load ticket %s: %v", ticketID, tErr)
+			} else {
+				// Format date/time in Europe/Berlin
+				loc, _ := time.LoadLocation("Europe/Berlin")
+				eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+				eventTime := ticket.Event.TimeFrom
+
+				data := map[string]interface{}{
+					"UserName":       ticket.User.Name,
+					"EventName":      ticket.Event.Name,
+					"TicketID":       ticket.ID,
+					"EventDate":      eventDate,
+					"EventTime":      eventTime,
+					"IncludesPickup": ticket.IncludesPickup,
+					"PickupAddress":  ticket.PickupAddress,
+					"EventPrice":     ticket.Price,
+					"PickupPrice":    ticket.PickupPrice,
+					"TotalAmount":    ticket.TotalAmount,
+				}
+				if err := h.emailService.SendTicketConfirmation(ticket.User.Email, data); err != nil {
+					log.Printf("WARN: Failed to send ticket confirmation email for ticket %s: %v", ticketID, err)
+				}
+			}
 		}
 
 		log.Printf("SUCCESS: Payment confirmed for TicketID: %s", ticketID)

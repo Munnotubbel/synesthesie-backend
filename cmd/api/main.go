@@ -53,6 +53,8 @@ func main() {
 	ticketService := services.NewTicketService(db, cfg)
 	emailService := services.NewEmailService(cfg)
 	adminService := services.NewAdminService(db, cfg)
+	// Attach email service so AuthService can send emails (e.g., password reset)
+	authService.AttachEmailService(emailService)
 	storageService := services.NewStorageService(cfg)
 	assetService := services.NewAssetService(db, cfg)
 	s3Service, err := services.NewS3Service(cfg)
@@ -106,13 +108,13 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(authService, userService, inviteService, emailService)
-	userHandler := handlers.NewUserHandler(userService, eventService, ticketService, authService)
+	userHandler := handlers.NewUserHandler(userService, eventService, ticketService, authService, emailService)
 	// wire asset/storage into userHandler (exported fields)
 	userHandler.AssetService = assetService
 	userHandler.StorageService = storageService
 	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, storageService, s3Service, qrService)
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService)
-	stripeHandler := handlers.NewStripeHandler(ticketService, cfg)
+	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
 
 	// Setup routes
 	api := router.Group("/api/v1")
@@ -155,6 +157,8 @@ func main() {
 			user.GET("/tickets", userHandler.GetUserTickets)
 			user.POST("/tickets", userHandler.BookTicket)
 			user.DELETE("/tickets/:id", userHandler.CancelTicket)
+			user.POST("/tickets/:id/cancel-refund", userHandler.CancelTicketRefund)
+			user.POST("/tickets/:id/cancel", userHandler.CancelTicketNoRefund)
 			user.GET("/assets/:id/download", userHandler.DownloadAsset)
 			user.GET("/settings/pickup-price", userHandler.GetPickupServicePrice)
 		}

@@ -2,11 +2,13 @@ package handlers
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,17 +21,19 @@ type UserHandler struct {
 	eventService   *services.EventService
 	ticketService  *services.TicketService
 	AuthService    *services.AuthService
+	EmailService   *services.EmailService
 	AssetService   *services.AssetService
 	StorageService *services.StorageService
 	S3Service      *services.S3Service
 }
 
-func NewUserHandler(userService *services.UserService, eventService *services.EventService, ticketService *services.TicketService, authService *services.AuthService) *UserHandler {
+func NewUserHandler(userService *services.UserService, eventService *services.EventService, ticketService *services.TicketService, authService *services.AuthService, emailService *services.EmailService) *UserHandler {
 	return &UserHandler{
 		userService:   userService,
 		eventService:  eventService,
 		ticketService: ticketService,
 		AuthService:   authService,
+		EmailService:  emailService,
 	}
 }
 
@@ -309,9 +313,127 @@ func (h *UserHandler) CancelTicket(c *gin.Context) {
 		return
 	}
 
-	if err := h.ticketService.CancelTicket(ticketID, userID.(uuid.UUID)); err != nil {
+	// Optionaler Modus: auto|refund|no_refund
+	mode := strings.TrimSpace(c.DefaultQuery("mode", "auto"))
+	if mode != "auto" && mode != "refund" && mode != "no_refund" {
+		mode = "auto"
+	}
+
+	if err := h.ticketService.CancelTicketWithMode(ticketID, userID.(uuid.UUID), mode); err != nil {
+		if err.Error() == "refund_not_eligible" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refund_not_eligible"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// E-Mail Stornobestätigung senden (mit ggf. Refund-Info)
+	if h.EmailService != nil {
+		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
+			// Zeiten formatieren
+			loc, _ := time.LoadLocation("Europe/Berlin")
+			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
+			refund := ticket.RefundedAmount
+			full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
+			partial := refund > 0 && !full
+			data := map[string]interface{}{
+				"UserName":         ticket.User.Name,
+				"EventName":        ticket.Event.Name,
+				"EventDate":        eventDate,
+				"TicketID":         ticket.ID,
+				"CancellationDate": cancelDate,
+				"RefundAmount":     fmt.Sprintf("%.2f", refund),
+				"FullRefund":       full,
+				"PartialRefund":    partial,
+			}
+			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
+}
+
+// CancelTicketRefund cancels with explicit refund mode (if eligible)
+func (h *UserHandler) CancelTicketRefund(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	ticketIDStr := c.Param("id")
+
+	ticketID, err := uuid.Parse(ticketIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	if err := h.ticketService.CancelTicketWithMode(ticketID, userID.(uuid.UUID), "refund"); err != nil {
+		if err.Error() == "refund_not_eligible" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refund_not_eligible"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.EmailService != nil {
+		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
+			loc, _ := time.LoadLocation("Europe/Berlin")
+			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
+			refund := ticket.RefundedAmount
+			full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
+			partial := refund > 0 && !full
+			data := map[string]interface{}{
+				"UserName":         ticket.User.Name,
+				"EventName":        ticket.Event.Name,
+				"EventDate":        eventDate,
+				"TicketID":         ticket.ID,
+				"CancellationDate": cancelDate,
+				"RefundAmount":     fmt.Sprintf("%.2f", refund),
+				"FullRefund":       full,
+				"PartialRefund":    partial,
+			}
+			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
+}
+
+// CancelTicketNoRefund cancels explicitly without refund (for rebooking option)
+func (h *UserHandler) CancelTicketNoRefund(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	ticketIDStr := c.Param("id")
+
+	ticketID, err := uuid.Parse(ticketIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	if err := h.ticketService.CancelTicketWithMode(ticketID, userID.(uuid.UUID), "no_refund"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.EmailService != nil {
+		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
+			loc, _ := time.LoadLocation("Europe/Berlin")
+			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
+			refund := ticket.RefundedAmount // erwartungsgemäß 0
+			data := map[string]interface{}{
+				"UserName":         ticket.User.Name,
+				"EventName":        ticket.Event.Name,
+				"EventDate":        eventDate,
+				"TicketID":         ticket.ID,
+				"CancellationDate": cancelDate,
+				"RefundAmount":     fmt.Sprintf("%.2f", refund),
+				"FullRefund":       false,
+				"PartialRefund":    false,
+			}
+			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})

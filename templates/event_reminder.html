@@ -1,127 +1,28 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Event-Erinnerung - Synesthesie</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f4f4f4;
-        }
-        .container {
-            background-color: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            background-color: #3498db;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-        }
-        .header h1 {
-            margin: 0;
-        }
-        .event-details {
-            background-color: #f8f9fa;
-            padding: 20px;
-            border-radius: 10px;
-            margin: 20px 0;
-            border-left: 5px solid #3498db;
-        }
-        .event-details h2 {
-            margin-top: 0;
-            color: #2c3e50;
-        }
-        .detail-row {
-            margin: 10px 0;
-            display: flex;
-            align-items: center;
-        }
-        .detail-row strong {
-            display: inline-block;
-            width: 120px;
-            color: #555;
-        }
-        .countdown {
-            text-align: center;
-            font-size: 24px;
-            color: #e74c3c;
-            margin: 20px 0;
-            font-weight: bold;
-        }
-        .footer {
-            text-align: center;
-            color: #7f8c8d;
-            font-size: 14px;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #ecf0f1;
-        }
-        .info-box {
-            background-color: #e8f4f8;
-            border: 1px solid #bee5eb;
-            padding: 15px;
-            border-radius: 5px;
-            margin: 20px 0;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synesthesie Event</title>
+  <style>
+    body { background:#0b0b10; color:#F2F4F8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin:0; padding:0; }
+    .container { max-width:600px; margin:0 auto; padding:32px 20px; }
+    .card { background: linear-gradient(135deg, #141927 0%, #0f1120 100%); border-radius:16px; padding:28px; border:1px solid rgba(255,255,255,0.14); }
+    .title { font-size:26px; line-height:1.3; color:#2EF2A5; margin:0 0 14px; font-weight:800; letter-spacing:0.2px; }
+    p { color:#E5E7EB; margin:0 0 14px; line-height:1.6; }
+    .button { display:inline-block; padding:12px 18px; background:#2EF2A5; color:#0b0b10 !important; text-decoration:none; border-radius:12px; font-weight:800; font-size:15px; }
+    .footer { margin-top:24px; font-size:12px; color:#98A2B3; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Nicht vergessen!</h1>
-            <p style="margin: 5px 0;">Dein Event steht bevor</p>
-        </div>
-
-        <div class="content">
-            <p>Hallo {{.UserName}},</p>
-
-            <div class="countdown">
-                Noch {{.DaysUntilEvent}} {{if eq .DaysUntilEvent 1}}Tag{{else}}Tage{{end}} bis zum Event!
-            </div>
-
-            <div class="event-details">
-                <h2>{{.EventName}}</h2>
-                <div class="detail-row">
-                    <strong>📅 Datum:</strong> {{.EventDate}}
-                </div>
-                <div class="detail-row">
-                    <strong>🕐 Uhrzeit:</strong> {{.EventTime}}
-                </div>
-                <div class="detail-row">
-                    <strong>🎫 Ticket-ID:</strong> {{.TicketID}}
-                </div>
-            </div>
-
-            {{if .IncludesPickup}}
-            <div class="info-box">
-                <h3 style="margin-top: 0;">🚗 Abhol- und Bringservice</h3>
-                <p>Du hast den Abhol- und Bringservice gebucht. Wir holen dich rechtzeitig ab:</p>
-                <p><strong>Abholadresse:</strong> {{.PickupAddress}}</p>
-                <p><em>Die genaue Abholzeit teilen wir dir einen Tag vorher mit.</em></p>
-            </div>
-            {{end}}
-
-            <p>Wir freuen uns schon sehr auf dich! Falls du noch Fragen hast, melde dich gerne bei uns.</p>
-
-            <p>Bis bald!</p>
-            <p>Dein Synesthesie-Team</p>
-        </div>
-
-        <div class="footer">
-            <p>Diese E-Mail wurde automatisch generiert. Bitte antworte nicht auf diese E-Mail.</p>
-            <p>&copy; 2024 Synesthesie. Alle Rechte vorbehalten.</p>
-        </div>
+  <div class="container">
+    <div class="card">
+      <h1 class="title">Neues Event</h1>
+      <p>Gute News – es gibt ein neues Event: <strong>{{.EventName}}</strong>.</p>
+      <p>Schau dir alle Infos im Eventbereich an.</p>
+      <p style="margin-top:18px;"><a class="button" href="{{.EventsURL}}" target="_blank" rel="noopener">Events ansehen</a></p>
     </div>
+    <p class="footer">Diese E‑Mail wurde automatisch generiert.</p>
+  </div>
 </body>
 </html>

@@ -214,7 +214,14 @@ func (s *TicketService) ConfirmPayment(ticketID uuid.UUID, paymentIntentID strin
 }
 
 // CancelTicket cancels a paid ticket and processes a refund, or deletes a pending ticket.
+// CancelTicket keeps backward compatibility with default 'auto' behaviour
 func (s *TicketService) CancelTicket(ticketID, userID uuid.UUID) error {
+	return s.CancelTicketWithMode(ticketID, userID, "auto")
+}
+
+// CancelTicketWithMode cancels a ticket with an explicit mode:
+// mode = 'auto' (default policy), 'refund' (require refund eligibility), 'no_refund' (force cancel without refund)
+func (s *TicketService) CancelTicketWithMode(ticketID, userID uuid.UUID, mode string) error {
 	var ticket models.Ticket
 
 	// Get ticket with event for paid tickets, or just the ticket for pending ones
@@ -235,32 +242,50 @@ func (s *TicketService) CancelTicket(ticketID, userID uuid.UUID) error {
 		return nil
 
 	case "paid":
-		// Existing logic for paid tickets: Check cancellation window and process refund.
-		if !ticket.CanBeCancelled() {
-			return errors.New("ticket can only be cancelled up to 7 days before the event")
-		}
-
-		// Calculate refund amount (50%)
-		refundAmount := ticket.GetRefundAmount(false)
-
-		// Process Stripe refund
-		if ticket.StripePaymentIntentID != "" {
-			_, err := refund.New(&stripe.RefundParams{
-				PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
-				Amount:        stripe.Int64(int64(refundAmount * 100)), // Convert to cents
-			})
-			if err != nil {
-				return fmt.Errorf("failed to process refund: %w", err)
+		// Stornierung ist grundsätzlich erlaubt. Refund ist optional per ENV + Frist.
+		days := 14
+		percent := 50
+		policyEnabled := false
+		if s.cfg != nil {
+			policyEnabled = s.cfg.TicketCancellationEnabled
+			if s.cfg.TicketCancellationDays > 0 {
+				days = s.cfg.TicketCancellationDays
+			}
+			if s.cfg.TicketCancellationRefundPercent > 0 {
+				percent = s.cfg.TicketCancellationRefundPercent
 			}
 		}
 
-		// Update ticket status to 'cancelled'
+		refundAmount := 0.0
+		if policyEnabled && mode != "no_refund" {
+			// Prüfe Fristfenster für Refund
+			daysUntilEvent := time.Until(ticket.Event.DateFrom).Hours() / 24
+			if int(daysUntilEvent) >= days {
+				refundAmount = ticket.TotalAmount * float64(percent) / 100.0
+				// Stripe-Refund nur bei Betrag > 0 und vorhandenem PaymentIntent
+				if refundAmount > 0 && ticket.StripePaymentIntentID != "" {
+					if _, err := refund.New(&stripe.RefundParams{
+						PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
+						Amount:        stripe.Int64(int64(refundAmount * 100)),
+					}); err != nil {
+						return fmt.Errorf("failed to process refund: %w", err)
+					}
+				}
+			} else if mode == "refund" {
+				// Gewünschter Refund, aber nicht eligible → Fehler zurück
+				return errors.New("refund_not_eligible")
+			}
+		}
+
+		// Ticket immer stornieren; Refund-Felder nur setzen, wenn > 0
 		now := time.Now()
 		updates := map[string]interface{}{
-			"status":          "cancelled",
-			"refunded_amount": refundAmount,
-			"refunded_at":     now,
-			"cancelled_at":    now,
+			"status":       "cancelled",
+			"cancelled_at": now,
+		}
+		if refundAmount > 0 {
+			updates["refunded_amount"] = refundAmount
+			updates["refunded_at"] = now
 		}
 
 		if err := s.db.Model(&ticket).Updates(updates).Error; err != nil {
