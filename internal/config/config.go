@@ -12,6 +12,7 @@ type Config struct {
 	Port        string
 	Env         string
 	APIUrl      string
+	PublicURL   string
 	FrontendURL string
 
 	// Database
@@ -118,6 +119,7 @@ func New() *Config {
 		Port:        getEnv("PORT", "8080"),
 		Env:         getEnv("ENV", "development"),
 		APIUrl:      getEnv("API_URL", "http://localhost:8080"),
+		PublicURL:   getEnv("PUBLIC_URL", getEnv("API_URL", "http://localhost:8080")),
 		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:3000"),
 
 		// Database

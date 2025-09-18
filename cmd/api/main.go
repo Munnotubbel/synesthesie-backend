@@ -113,7 +113,7 @@ func main() {
 	userHandler.AssetService = assetService
 	userHandler.StorageService = storageService
 	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, storageService, s3Service, qrService)
-	publicHandler := handlers.NewPublicHandler(eventService, inviteService)
+	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
 
 	// Setup routes
@@ -130,6 +130,7 @@ func main() {
 			public.GET("/events", publicHandler.GetUpcomingEvents)
 			public.GET("/invite/:code", publicHandler.CheckInviteCode)
 			public.POST("/invite/:code/view", publicHandler.ViewInviteCode)
+			public.GET("/events/ics", publicHandler.GetEventICS)
 		}
 
 		// Auth routes

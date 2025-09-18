@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/csv"
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -240,12 +241,41 @@ func (h *AdminHandler) DeleteEvent(c *gin.Context) {
 		return
 	}
 
-	if err := h.eventService.DeleteEvent(eventID); err != nil {
+	// Anforderung „Event löschen“: Statt Hard-Delete setzen wir Event auf inactive,
+	// erstatten alle Tickets voll und informieren die Nutzer per E-Mail.
+	ts := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
+	if err := ts.CancelAllTicketsForEvent(eventID, true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refund/cancel tickets"})
+		return
+	}
+	if err := h.eventService.DeactivateEvent(eventID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Event deleted successfully"})
+	// E-Mails an Ticketinhaber
+	// Lade betroffene Tickets (auch bereits pending/paid vor Statuswechsel) und sende Info-Mail
+	tsList, _ := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig()).GetEventTickets(eventID)
+	email := services.NewEmailService(h.adminService.GetConfig())
+	loc, _ := time.LoadLocation("Europe/Berlin")
+	cancelledAt := time.Now().In(loc).Format("02.01.2006 15:04")
+	for _, t := range tsList {
+		data := map[string]interface{}{
+			"UserName":       t.User.Name,
+			"EventName":      t.Event.Name,
+			"EventDate":      t.Event.DateFrom.In(loc).Format("02.01.2006"),
+			"EventTime":      t.Event.TimeFrom,
+			"TicketID":       t.ID,
+			"RefundAmount":   fmt.Sprintf("%.2f", t.TotalAmount),
+			"FullRefund":     true,
+			"PartialRefund":  false,
+			"CancellationBy": "abgesagt durch die Veranstalter:innen",
+			"CancellationAt": cancelledAt,
+		}
+		_ = email.SendEventCancelled(t.User.Email, data)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Event cancelled and deactivated successfully"})
 }
 
 // DeactivateEvent deactivates an event
@@ -256,6 +286,10 @@ func (h *AdminHandler) DeactivateEvent(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
 		return
 	}
+
+	// Optional: set all tickets of event to cancelled (no refund) when deactivating
+	ts := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
+	_ = ts.CancelAllTicketsForEvent(eventID, false)
 
 	if err := h.eventService.DeactivateEvent(eventID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -274,8 +308,8 @@ func (h *AdminHandler) RefundEventTickets(c *gin.Context) {
 		return
 	}
 
-	// This would typically be injected
-	ticketService := services.NewTicketService(h.eventService.GetDB(), nil)
+	// Use configured TicketService to ensure Stripe key is set
+	ticketService := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
 
 	if err := ticketService.RefundEventTickets(eventID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refund tickets"})
@@ -934,6 +968,8 @@ func (h *AdminHandler) ExportPickupCSV(c *gin.Context) {
 	}
 
 	buf := &bytes.Buffer{}
+	// Prepend UTF-8 BOM for better Excel compatibility (äöüß etc.)
+	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(buf)
 	_ = w.Write([]string{"Name", "Mobile", "Pickup-Address"})
 	for _, t := range tickets {
@@ -948,7 +984,7 @@ func (h *AdminHandler) ExportPickupCSV(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=pickups.csv")
 	c.Data(http.StatusOK, "text/csv", buf.Bytes())
 }

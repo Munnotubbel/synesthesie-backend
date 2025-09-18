@@ -13,6 +13,7 @@ import (
 	"github.com/stripe/stripe-go/v82/webhook"
 	"github.com/synesthesie/backend/internal/config"
 	"github.com/synesthesie/backend/internal/services"
+	jwtpkg "github.com/synesthesie/backend/pkg/jwt"
 )
 
 type StripeHandler struct {
@@ -105,6 +106,19 @@ func (h *StripeHandler) HandleWebhook(c *gin.Context) {
 				eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
 				eventTime := ticket.Event.TimeFrom
 
+				// Generate ICS link for calendar add using PUBLIC_URL
+				base := h.cfg.PublicURL
+				if base == "" {
+					if h.cfg.Env == "production" {
+						base = "https://api.synesthesie.de"
+					} else {
+						base = "https://api-dev.synesthesie.de"
+					}
+				}
+				// sign short-lived calendar token (e.g., 24h)
+				token, _ := jwtpkg.GenerateCalendarToken(ticket.Event.ID.String(), h.cfg.JWTSecret, 24*time.Hour)
+				icsURL := base + "/api/v1/public/events/ics?token=" + token
+
 				data := map[string]interface{}{
 					"UserName":       ticket.User.Name,
 					"EventName":      ticket.Event.Name,
@@ -116,6 +130,7 @@ func (h *StripeHandler) HandleWebhook(c *gin.Context) {
 					"EventPrice":     ticket.Price,
 					"PickupPrice":    ticket.PickupPrice,
 					"TotalAmount":    ticket.TotalAmount,
+					"ICSLink":        icsURL,
 				}
 				if err := h.emailService.SendTicketConfirmation(ticket.User.Email, data); err != nil {
 					log.Printf("WARN: Failed to send ticket confirmation email for ticket %s: %v", ticketID, err)

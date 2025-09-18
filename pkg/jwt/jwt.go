@@ -11,13 +11,15 @@ import (
 type TokenType string
 
 const (
-	AccessToken  TokenType = "access"
-	RefreshToken TokenType = "refresh"
+	AccessToken   TokenType = "access"
+	RefreshToken  TokenType = "refresh"
+	CalendarToken TokenType = "calendar"
 )
 
 // Claims represents the JWT claims
 type Claims struct {
 	UserID    string    `json:"user_id"`
+	EventID   string    `json:"event_id,omitempty"`
 	TokenType TokenType `json:"token_type"`
 	jwt.RegisteredClaims
 }
@@ -34,6 +36,21 @@ func GenerateToken(userID string, tokenType TokenType, secret string, duration t
 		},
 	}
 
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
+// GenerateCalendarToken generates a short-lived token encoding the event ID
+func GenerateCalendarToken(eventID string, secret string, duration time.Duration) (string, error) {
+	claims := Claims{
+		EventID:   eventID,
+		TokenType: CalendarToken,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(secret))
 }

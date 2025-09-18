@@ -90,6 +90,12 @@ func (s *EmailService) SendCancellationConfirmation(to string, cancellationData 
 	return s.sendEmail(to, subject, "cancellation_confirmation.html", cancellationData)
 }
 
+// SendEventCancelled notifies users that an event was cancelled (full refund issued)
+func (s *EmailService) SendEventCancelled(to string, data map[string]interface{}) error {
+	subject := "Event abgesagt – vollständige Rückerstattung"
+	return s.sendEmail(to, subject, "cancellation_confirmation.html", data)
+}
+
 // SendEventAnnouncement sends a short announcement for newly created events
 func (s *EmailService) SendEventAnnouncement(to string, data map[string]interface{}) error {
 	subject := "Neues Event bei Synesthesie"

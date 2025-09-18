@@ -371,12 +371,73 @@ func (s *TicketService) GetTicketByID(ticketID uuid.UUID) (*models.Ticket, error
 func (s *TicketService) GetEventTickets(eventID uuid.UUID) ([]*models.Ticket, error) {
 	var tickets []*models.Ticket
 
-	err := s.db.Preload("User").
+	err := s.db.Preload("User").Preload("Event").
 		Where("event_id = ?", eventID).
 		Order("created_at DESC").
 		Find(&tickets).Error
 
 	return tickets, err
+}
+
+// CancelAllTicketsForEvent cancels all tickets of an event.
+// If refundPaid is true, paid tickets are fully refunded and marked refunded; otherwise they are marked cancelled without refund.
+func (s *TicketService) CancelAllTicketsForEvent(eventID uuid.UUID, refundPaid bool) error {
+	var tickets []*models.Ticket
+	if err := s.db.Where("event_id = ? AND status IN ?", eventID, []string{"pending", "paid"}).Find(&tickets).Error; err != nil {
+		return err
+	}
+
+	now := time.Now()
+	for _, t := range tickets {
+		switch t.Status {
+		case "pending":
+			// historisieren statt löschen
+			updates := map[string]interface{}{
+				"status":       "cancelled",
+				"cancelled_at": now,
+			}
+			if err := s.db.Model(&models.Ticket{}).Where("id = ?", t.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		case "paid":
+			if refundPaid {
+				// full refund
+				if t.StripePaymentIntentID != "" {
+					_, err := refund.New(&stripe.RefundParams{
+						PaymentIntent: stripe.String(t.StripePaymentIntentID),
+						Amount:        stripe.Int64(int64(t.TotalAmount * 100)),
+					})
+					if err != nil {
+						return fmt.Errorf("failed to refund ticket %s: %w", t.ID, err)
+					}
+				}
+				updates := map[string]interface{}{
+					"status":          "refunded",
+					"refunded_amount": t.TotalAmount,
+					"refunded_at":     now,
+				}
+				if err := s.db.Model(&models.Ticket{}).Where("id = ?", t.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+			} else {
+				// cancel without refund
+				updates := map[string]interface{}{
+					"status":       "cancelled",
+					"cancelled_at": now,
+				}
+				if err := s.db.Model(&models.Ticket{}).Where("id = ?", t.ID).Updates(updates).Error; err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// DeleteTicketsForEvent removes all tickets for the event (after refunds)
+func (s *TicketService) DeleteTicketsForEvent(eventID uuid.UUID) error {
+	return s.db.Where("event_id = ?", eventID).Delete(&models.Ticket{}).Error
 }
 
 // RefundEventTickets refunds all tickets for an event (when event is cancelled)

@@ -4,66 +4,49 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ticketbestätigung</title>
-  <style>
+    <style>
     body { background:#0b0b10; color:#F2F4F8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin:0; padding:0; }
     .preheader { display:none!important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all; }
 
     .container { max-width:600px; margin:0 auto; padding:32px 20px; }
     .card { background: linear-gradient(135deg, #141927 0%, #0f1120 100%); border-radius:16px; padding:28px; border:1px solid rgba(255,255,255,0.14); }
 
-    .title { font-size:26px; line-height:1.3; color:#2EF2A5; margin:0 0 14px; font-weight:800; letter-spacing:0.2px; }
+    .title { font-size:26px; line-height:1.3; color:#ff2fbf; margin:0 0 14px; font-weight:800; letter-spacing:0.2px; }
     .subtitle { font-size:16px; color:#E5E7EB; margin:0 0 16px; }
     p { color:#E5E7EB; margin:0 0 14px; line-height:1.6; }
     .muted { color:#A9B1BB; }
-
-    .box { border:1px dashed rgba(255,255,255,0.22); border-radius:12px; padding:16px; margin:18px 0; background: rgba(255,255,255,0.03); }
-    .row { display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.08); }
-    .row:last-child { border-bottom:none; }
-    .label { color:#98A2B3; min-width:120px; }
-    .value { color:#F2F4F8; text-align:right; }
-
-    .table { width:100%; border-collapse:collapse; margin-top:6px; }
-    .table td { padding:6px 0; }
-    .total { border-top:1px solid rgba(255,255,255,0.16); font-weight:800; color:#2EF2A5; padding-top:10px; }
-
-    .button { display:inline-block; padding:12px 18px; background:#2EF2A5; color:#0b0b10 !important; text-decoration:none; border-radius:12px; font-weight:800; font-size:15px; }
-
+    .button { display:inline-block; padding:14px 22px; background:#ff2fbf; color:#0b0b10 !important; text-decoration:none; border-radius:12px; font-weight:800; font-size:15px; }
+    .link { color:#ff70d3; word-break:break-all; text-decoration:underline; }
     .footer { margin-top:24px; font-size:12px; color:#98A2B3; }
-  </style>
+    </style>
 </head>
 <body>
   <div class="preheader">Dein Ticket ist bestätigt. Wir sehen uns beim Event.</div>
-  <div class="container">
+    <div class="container">
     <div class="card">
       <h1 class="title">Ticket bestätigt</h1>
       <p class="subtitle">Hallo {{.UserName}},</p>
       <p>vielen Dank für deine Buchung. Dein Ticket für <strong>{{.EventName}}</strong> ist jetzt bestätigt.</p>
 
-      <div class="box">
-        <div class="row"><div class="label">Ticket-ID</div><div class="value">{{.TicketID}}</div></div>
-        <div class="row"><div class="label">Datum</div><div class="value">{{.EventDate}}</div></div>
-        <div class="row"><div class="label">Uhrzeit</div><div class="value">{{.EventTime}}</div></div>
-        {{if .IncludesPickup}}
-        <div class="row"><div class="label">Abholadresse</div><div class="value">{{.PickupAddress}}</div></div>
-        {{end}}
-      </div>
+      <p><strong>Ticket-ID:</strong> {{.TicketID}}</p>
+      <p><strong>Datum:</strong> {{.EventDate}}</p>
+      <p><strong>Uhrzeit:</strong> {{.EventTime}}</p>
+                {{if .IncludesPickup}}
+      <p><strong>Abholadresse:</strong> {{.PickupAddress}}</p>
+                {{end}}
 
       <p class="subtitle" style="margin-top:18px;">Preisübersicht</p>
-      <table class="table">
-        <tr><td>Event-Ticket</td><td class="value">{{.EventPrice}} €</td></tr>
-        {{if .IncludesPickup}}
-        <tr><td>Abhol- und Bringservice</td><td class="value">{{.PickupPrice}} €</td></tr>
-        {{end}}
-        <tr class="total"><td>Gesamtbetrag</td><td class="value">{{.TotalAmount}} €</td></tr>
-      </table>
+      <p>Event-Ticket: {{.EventPrice}} €<br/>
+      {{if .IncludesPickup}}Abhol- und Bringservice: {{.PickupPrice}} €<br/>{{end}}
+      <strong>Gesamtbetrag: {{.TotalAmount}} €</strong></p>
 
-      <p class="muted" style="margin-top:14px;">
-        Stornierungen sind gemäß unserer Policy möglich.
+      <p class="muted" style="margin-top:14px;">Stornierungen sind gemäß unserer Policy möglich.</p>
+
+      <p style="margin-top:18px;">
+        <a class="button" href="{{.ICSLink}}" target="_blank" rel="noopener">Zum Kalender hinzufügen</a>
       </p>
     </div>
-  </div>
-  <div class="container">
     <p class="footer">Diese E‑Mail wurde automatisch generiert.</p>
-  </div>
+    </div>
 </body>
 </html>
