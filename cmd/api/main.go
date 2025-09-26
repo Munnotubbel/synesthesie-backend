@@ -191,6 +191,7 @@ func main() {
 			admin.DELETE("/events/:id", adminHandler.DeleteEvent)
 			admin.POST("/events/:id/deactivate", adminHandler.DeactivateEvent)
 			admin.POST("/events/:id/refund", adminHandler.RefundEventTickets)
+			admin.GET("/events/:id/drinks.xlsx", adminHandler.ExportEventDrinksXLSX)
 
 			// Invite management
 			admin.GET("/invites", adminHandler.GetAllInvites)

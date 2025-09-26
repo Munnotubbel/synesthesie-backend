@@ -319,6 +319,109 @@ func (h *AdminHandler) RefundEventTickets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Tickets refunded successfully"})
 }
 
+// ExportEventDrinksXLSX exports favorite drinks statistics for event participants as an Excel file
+func (h *AdminHandler) ExportEventDrinksXLSX(c *gin.Context) {
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
+		return
+	}
+
+	// Load tickets with users for the event (only paid)
+	ts := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
+	tickets, err := ts.GetEventTickets(eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load event tickets"})
+		return
+	}
+
+	// Aggregate drinks across participants with paid tickets
+	count := func() map[string]int {
+		m := make(map[string]int)
+		for _, t := range tickets {
+			if t.Status != "paid" {
+				continue
+			}
+			if t.User.Drink1 != "" {
+				m[strings.TrimSpace(t.User.Drink1)]++
+			}
+			if t.User.Drink2 != "" {
+				m[strings.TrimSpace(t.User.Drink2)]++
+			}
+			if t.User.Drink3 != "" {
+				m[strings.TrimSpace(t.User.Drink3)]++
+			}
+		}
+		return m
+	}()
+
+	// If no paid participants, return a clear message (like pickup CSV behavior)
+	hasPaid := false
+	for _, t := range tickets {
+		if t.Status == "paid" {
+			hasPaid = true
+			break
+		}
+	}
+	if !hasPaid {
+		c.JSON(http.StatusOK, gin.H{"status": "no_participants"})
+		return
+	}
+
+	// Prepare CSV (Excel-compatible)
+	buf := &bytes.Buffer{}
+	w := csv.NewWriter(buf)
+	_ = w.Write([]string{"Drink", "Anzahl"})
+
+	keys := make([]string, 0, len(count))
+	for k := range count {
+		keys = append(keys, k)
+	}
+	for i := 0; i < len(keys); i++ {
+		for j := i + 1; j < len(keys); j++ {
+			if keys[j] < keys[i] {
+				keys[i], keys[j] = keys[j], keys[i]
+			}
+		}
+	}
+	for _, k := range keys {
+		_ = w.Write([]string{k, fmt.Sprintf("%d", count[k])})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to render CSV"})
+		return
+	}
+
+	// Build filename: Getränke_DD-MM-YYYY_EVENTNAME.csv (Europe/Berlin)
+	ev, _ := h.eventService.GetEventByID(eventID)
+	dateStr := ""
+	if ev != nil {
+		loc, _ := time.LoadLocation("Europe/Berlin")
+		dateStr = ev.DateFrom.In(loc).Format("02-01-2006")
+	}
+	name := "event"
+	if ev != nil && strings.TrimSpace(ev.Name) != "" {
+		name = strings.TrimSpace(ev.Name)
+	}
+	safe := strings.Map(func(r rune) rune {
+		if r == ' ' {
+			return '_'
+		}
+		if r == '/' || r == '\\' {
+			return '-'
+		}
+		return r
+	}, name)
+	filename := fmt.Sprintf("Getränke_%s_%s.csv", dateStr, safe)
+
+	// Response headers
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
+}
+
 // GetAllInvites retrieves all invite codes
 func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
