@@ -75,6 +75,9 @@ func (s *AdminService) CreateDefaultAdmin() error {
 
 // ResetUserPassword resets a user's password
 func (s *AdminService) ResetUserPassword(userID uuid.UUID) (string, error) {
+	if s.cfg == nil || !s.cfg.AdminPasswordResetEnabled {
+		return "", errors.New("admin password reset disabled")
+	}
 	// Generate new password
 	newPassword := crypto.GenerateRandomPassword(12)
 

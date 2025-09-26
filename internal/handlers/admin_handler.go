@@ -324,9 +324,11 @@ func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	includeUsed := c.Query("include_used") == "true"
+	groupFilter := strings.TrimSpace(c.Query("group"))   // optional: bubble|guests
+	statusFilter := strings.TrimSpace(c.Query("status")) // optional: new|viewed|registered|inactive
 	offset := (page - 1) * limit
 
-	invites, total, err := h.inviteService.GetAllInvites(offset, limit, includeUsed)
+	invites, total, err := h.inviteService.GetAllInvites(offset, limit, includeUsed, groupFilter, statusFilter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve invites"})
 		return
@@ -336,6 +338,7 @@ func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 	for i, invite := range invites {
 		inviteData := gin.H{
 			"id":            invite.ID,
+			"public_id":     invite.PublicID,
 			"code":          invite.Code,
 			"status":        invite.Status,
 			"group":         invite.Group,
@@ -571,6 +574,10 @@ func (h *AdminHandler) GetUserDetails(c *gin.Context) {
 
 // ResetUserPassword resets a user's password
 func (h *AdminHandler) ResetUserPassword(c *gin.Context) {
+	if h.adminService == nil || h.adminService.GetConfig() == nil || !h.adminService.GetConfig().AdminPasswordResetEnabled {
+		c.JSON(http.StatusNotFound, gin.H{"error": "endpoint disabled"})
+		return
+	}
 	userIDStr := c.Param("id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {

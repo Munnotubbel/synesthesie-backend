@@ -29,11 +29,11 @@ func NewAuthHandler(authService *services.AuthService, userService *services.Use
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req struct {
 		InviteCode string `json:"invite_code" binding:"required"`
-		Username   string `json:"username" binding:"required,min=3,max=30"`
+		Username   string `json:"username" binding:"required,min=2,max=30"`
 		Email      string `json:"email" binding:"required,email"`
 		Password   string `json:"password" binding:"required,min=8"`
 		Name       string `json:"name" binding:"required"`
-		Mobile     string `json:"mobile" binding:"required"`
+		Mobile     string `json:"mobile"`
 		Drink1     string `json:"drink1"`
 		Drink2     string `json:"drink2"`
 		Drink3     string `json:"drink3"`
@@ -62,10 +62,15 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Validate mobile
-	if !validation.ValidateE164Mobile(req.Mobile) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid mobile number format (use +491234567890)"})
-		return
+	// Validate mobile only if SMS verification is enabled and mobile provided
+	if h.authService != nil && h.authService.GetConfig() != nil && h.authService.GetConfig().SMSVerificationEnabled {
+		if req.Mobile == "" || !validation.ValidateE164Mobile(req.Mobile) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Mobile number required and must be E.164 (+491234567890) when SMS verification is enabled"})
+			return
+		}
+	} else {
+		// If SMS verification is disabled, ignore any provided mobile
+		req.Mobile = ""
 	}
 
 	// Validate invite code for registration
@@ -116,6 +121,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 // VerifyMobile handles mobile verification by code
 func (h *AuthHandler) VerifyMobile(c *gin.Context) {
+	if h.authService == nil || h.authService.GetConfig() == nil || !h.authService.GetConfig().SMSVerificationEnabled {
+		c.JSON(http.StatusNotFound, gin.H{"error": "endpoint disabled"})
+		return
+	}
 	userID, exists := c.Get("userID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -137,6 +146,10 @@ func (h *AuthHandler) VerifyMobile(c *gin.Context) {
 
 // ResendMobileVerification issues a new verification code
 func (h *AuthHandler) ResendMobileVerification(c *gin.Context) {
+	if h.authService == nil || h.authService.GetConfig() == nil || !h.authService.GetConfig().SMSVerificationEnabled {
+		c.JSON(http.StatusNotFound, gin.H{"error": "endpoint disabled"})
+		return
+	}
 	userID, exists := c.Get("userID")
 	if !exists {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})

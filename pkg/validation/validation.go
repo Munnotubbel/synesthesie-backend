@@ -61,7 +61,7 @@ func ValidatePassword(password string) bool {
 // ValidateUsername validates username format
 func ValidateUsername(username string) bool {
 	username = strings.TrimSpace(username)
-	if len(username) < 3 || len(username) > 30 {
+	if len(username) < 2 || len(username) > 30 {
 		return false
 	}
 	// Allow alphanumeric, underscore, and hyphen

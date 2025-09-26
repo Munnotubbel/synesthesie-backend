@@ -231,13 +231,27 @@ func (s *InviteService) DeactivateInvite(inviteID uuid.UUID) error {
 }
 
 // GetAllInvites retrieves all invites with pagination
-func (s *InviteService) GetAllInvites(offset, limit int, includeUsed bool) ([]*models.InviteCode, int64, error) {
+func (s *InviteService) GetAllInvites(offset, limit int, includeUsed bool, group string, status string) ([]*models.InviteCode, int64, error) {
 	var invites []*models.InviteCode
 	var total int64
 
 	query := s.db.Model(&models.InviteCode{})
 	if !includeUsed {
 		query = query.Where("status != ?", models.InviteStatusRegistered)
+	}
+	if group != "" {
+		if group != "bubble" && group != "guests" {
+			return nil, 0, errors.New("invalid group; must be 'bubble' or 'guests'")
+		}
+		query = query.Where("\"group\" = ?", group)
+	}
+	if status != "" {
+		switch status {
+		case models.InviteStatusNew, models.InviteStatusViewed, models.InviteStatusRegistered, models.InviteStatusInactive:
+			query = query.Where("status = ?", status)
+		default:
+			return nil, 0, errors.New("invalid status; must be new|viewed|registered|inactive")
+		}
 	}
 
 	// Count total

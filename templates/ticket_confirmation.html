@@ -31,6 +31,7 @@
       <p><strong>Ticket-ID:</strong> {{.TicketID}}</p>
       <p><strong>Datum:</strong> {{.EventDate}}</p>
       <p><strong>Uhrzeit:</strong> {{.EventTime}}</p>
+      <p><strong>Adresse:</strong> Herzbergstraße 123, 10365 Berlin</p>
                 {{if .IncludesPickup}}
       <p><strong>Abholadresse:</strong> {{.PickupAddress}}</p>
                 {{end}}
@@ -42,11 +43,21 @@
 
       <p class="muted" style="margin-top:14px;">Stornierungen sind gemäß unserer Policy möglich.</p>
 
+      <div style="margin:18px 0;">
+        <p class="subtitle" style="margin:0 0 8px;">Wegbeschreibung</p>
+        <!--[if mso]>
+        <img src="cid:lageplan" alt="Lageplan" style="width:100%; border-radius:12px; border:1px solid rgba(255,255,255,0.14);" />
+        <![endif]-->
+        <!--[if !mso]><!-- -->
+        <img src="{{.LageplanDataURI}}" alt="Lageplan" style="width:100%; border-radius:12px; border:1px solid rgba(255,255,255,0.14);" />
+        <!--<![endif]-->
+      </div>
+
       <p style="margin-top:18px;">
         <a class="button" href="{{.ICSLink}}" target="_blank" rel="noopener">Zum Kalender hinzufügen</a>
       </p>
     </div>
-    <p class="footer">Diese E‑Mail wurde automatisch generiert.</p>
+    <p class="footer">Diese E‑Mail wurde automatisch generiert. Bei Fragen oder Problemen: <a class="link" href="mailto:info@synesthesie.de">info@synesthesie.de</a></p>
     </div>
 </body>
 </html>

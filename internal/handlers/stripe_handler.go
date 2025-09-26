@@ -142,6 +142,44 @@ func (h *StripeHandler) HandleWebhook(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Payment confirmed"})
 		return
 
+	case "checkout.session.expired":
+		var session stripe.CheckoutSession
+		if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
+			log.Printf("ERROR: Failed to parse webhook JSON for checkout.session.expired: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Error parsing webhook JSON"})
+			return
+		}
+		// Lookup by metadata
+		ticketIDStr, ok := session.Metadata["ticket_id"]
+		if !ok {
+			log.Printf("ERROR: ticket_id not found in metadata for expired session %s", session.ID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Ticket ID not found in metadata"})
+			return
+		}
+		ticketID, err := uuid.Parse(ticketIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+			return
+		}
+		_ = h.ticketService.CancelPendingBySystem(ticketID, "session_expired")
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
+		return
+
+	case "checkout.session.async_payment_failed":
+		var session stripe.CheckoutSession
+		if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
+			log.Printf("ERROR: Failed to parse webhook JSON for checkout.session.async_payment_failed: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Error parsing webhook JSON"})
+			return
+		}
+		if ticketIDStr, ok := session.Metadata["ticket_id"]; ok {
+			if ticketID, err := uuid.Parse(ticketIDStr); err == nil {
+				_ = h.ticketService.CancelPendingBySystem(ticketID, "async_payment_failed")
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "success"})
+		return
+
 	case "payment_intent.succeeded":
 		var paymentIntent stripe.PaymentIntent
 		err := json.Unmarshal(event.Data.Raw, &paymentIntent)

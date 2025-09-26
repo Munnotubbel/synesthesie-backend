@@ -41,10 +41,12 @@ type Config struct {
 	AdminEmail    string
 
 	// Stripe
-	StripeSecretKey     string
-	StripeWebhookSecret string
-	StripeSuccessURL    string
-	StripeCancelURL     string
+	StripeSecretKey               string
+	StripeWebhookSecret           string
+	StripeSuccessURL              string
+	StripeCancelURL               string
+	StripePaymentMethods          []string // e.g. ["paypal"], ["card"], ["card","paypal"], etc.
+	StripeAutomaticPaymentMethods bool
 
 	// SMTP
 	SMTPHost     string
@@ -98,9 +100,11 @@ type Config struct {
 
 	// SMS Verification
 	SMSVerificationEnabled bool
-	SMSProvider            string // "seven" | "clicksend"
-	SMSFrom                string
-	SevenAPIKey            string
+	// Admin features
+	AdminPasswordResetEnabled bool
+	SMSProvider               string // "seven" | "clicksend"
+	SMSFrom                   string
+	SevenAPIKey               string
 
 	// Legacy ClickSend (optional for backwards compat)
 	ClickSendUsername string
@@ -111,6 +115,10 @@ type Config struct {
 	TicketCancellationEnabled       bool
 	TicketCancellationDays          int
 	TicketCancellationRefundPercent int
+
+	// Ticket pending cleanup
+	PendingTicketTTLMinutes     int
+	PendingTicketCleanupEnabled bool
 }
 
 func New() *Config {
@@ -148,10 +156,12 @@ func New() *Config {
 		AdminEmail:    getEnv("ADMIN_EMAIL", "admin@synesthesie.de"),
 
 		// Stripe
-		StripeSecretKey:     getEnv("STRIPE_SECRET_KEY", ""),
-		StripeWebhookSecret: getEnv("STRIPE_WEBHOOK_SECRET", ""),
-		StripeSuccessURL:    getEnv("STRIPE_SUCCESS_URL", "https://synesthesie.de/payment/success"),
-		StripeCancelURL:     getEnv("STRIPE_CANCEL_URL", "https://synesthesie.de/payment/cancel"),
+		StripeSecretKey:               getEnv("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret:           getEnv("STRIPE_WEBHOOK_SECRET", ""),
+		StripeSuccessURL:              getEnv("STRIPE_SUCCESS_URL", "https://synesthesie.de/payment/success"),
+		StripeCancelURL:               getEnv("STRIPE_CANCEL_URL", "https://synesthesie.de/payment/cancel"),
+		StripePaymentMethods:          getEnvAsSlice("STRIPE_PAYMENT_METHODS", []string{"card"}),
+		StripeAutomaticPaymentMethods: getEnv("STRIPE_AUTOMATIC_PAYMENT_METHODS", "false") == "true",
 
 		// SMTP
 		SMTPHost:     getEnv("SMTP_HOST", "smtp.strato.de"),
@@ -204,10 +214,12 @@ func New() *Config {
 		AllowedHeaders: getEnvAsSlice("ALLOWED_HEADERS", []string{"Content-Type", "Authorization"}),
 
 		// SMS Verification
-		SMSVerificationEnabled: getEnv("SMS_VERIFICATION_ENABLED", "true") == "true",
-		SMSProvider:            getEnv("SMS_PROVIDER", "seven"),
-		SMSFrom:                getEnv("SMS_FROM", "Synesthesie"),
-		SevenAPIKey:            getEnv("SEVEN_API_KEY", ""),
+		SMSVerificationEnabled: getEnv("SMS_VERIFICATION_ENABLED", "false") == "true",
+		// Admin features
+		AdminPasswordResetEnabled: getEnv("ADMIN_PASSWORD_RESET_ENABLED", "false") == "true",
+		SMSProvider:               getEnv("SMS_PROVIDER", "seven"),
+		SMSFrom:                   getEnv("SMS_FROM", "Synesthesie"),
+		SevenAPIKey:               getEnv("SEVEN_API_KEY", ""),
 
 		// Legacy ClickSend
 		ClickSendUsername: getEnv("CLICKSEND_USERNAME", ""),
@@ -218,6 +230,10 @@ func New() *Config {
 		TicketCancellationEnabled:       getEnv("TICKET_CANCELLATION_ENABLED", "false") == "true",
 		TicketCancellationDays:          getEnvAsInt("TICKET_CANCELLATION_DAYS", 14),
 		TicketCancellationRefundPercent: getEnvAsInt("TICKET_CANCELLATION_REFUND_PERCENT", 50),
+
+		// Ticket pending cleanup
+		PendingTicketTTLMinutes:     getEnvAsInt("PENDING_TICKET_TTL_MINUTES", 30),
+		PendingTicketCleanupEnabled: getEnv("PENDING_TICKET_CLEANUP_ENABLED", "true") == "true",
 	}
 }
 

@@ -88,13 +88,13 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 		updates["drink3"] = req.Drink3
 	}
 
-	// Mobile Update Logik
+	// Mobile Update Logik (nur, wenn SMS-Verifizierung aktiv)
 	if req.Mobile != "" {
-		updates["mobile"] = req.Mobile
 		if h.AuthService != nil && h.AuthService.GetConfig() != nil && h.AuthService.GetConfig().SMSVerificationEnabled {
-			// Setze mobile_verified=false und sende neuen Code
+			updates["mobile"] = req.Mobile
 			updates["mobile_verified"] = false
 		}
+		// Wenn SMS deaktiviert ist, ignorieren wir die Mobile-Änderung
 	}
 
 	if len(updates) == 0 {

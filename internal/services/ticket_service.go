@@ -177,17 +177,21 @@ func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event
 	}
 
 	params := &stripe.CheckoutSessionParams{
-		PaymentMethodTypes: stripe.StringSlice([]string{"card"}),
-		Mode:               stripe.String(string(stripe.CheckoutSessionModePayment)),
-		LineItems:          lineItems,
-		SuccessURL:         stripe.String(fmt.Sprintf("%s?ticket_id=%s", s.cfg.StripeSuccessURL, ticket.ID)),
-		CancelURL:          stripe.String(s.cfg.StripeCancelURL),
-		ClientReferenceID:  stripe.String(ticket.ID.String()),
+		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
+		LineItems:         lineItems,
+		SuccessURL:        stripe.String(fmt.Sprintf("%s?ticket_id=%s", s.cfg.StripeSuccessURL, ticket.ID)),
+		CancelURL:         stripe.String(fmt.Sprintf("%s?ticket_id=%s", s.cfg.StripeCancelURL, ticket.ID)),
+		ClientReferenceID: stripe.String(ticket.ID.String()),
 		Metadata: map[string]string{
 			"ticket_id": ticket.ID.String(),
 			"user_id":   ticket.UserID.String(),
 			"event_id":  ticket.EventID.String(),
 		},
+	}
+
+	// Configure allowed payment methods explicitly from config
+	if len(s.cfg.StripePaymentMethods) > 0 {
+		params.PaymentMethodTypes = stripe.StringSlice(s.cfg.StripePaymentMethods)
 	}
 
 	return session.New(params)
@@ -211,6 +215,30 @@ func (s *TicketService) ConfirmPayment(ticketID uuid.UUID, paymentIntentID strin
 	}
 
 	return nil
+}
+
+// CancelPendingBySystem cancels a pending ticket (e.g., after Stripe session expiration)
+func (s *TicketService) CancelPendingBySystem(ticketID uuid.UUID, reason string) error {
+	updates := map[string]interface{}{
+		"status":       "cancelled",
+		"cancelled_at": time.Now(),
+	}
+	return s.db.Model(&models.Ticket{}).Where("id = ? AND status = ?", ticketID, "pending").Updates(updates).Error
+}
+
+// CleanupStalePending cancels tickets that stayed pending longer than the configured TTL
+func (s *TicketService) CleanupStalePending() (int64, error) {
+	if s.cfg == nil || s.cfg.PendingTicketTTLMinutes <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-time.Duration(s.cfg.PendingTicketTTLMinutes) * time.Minute)
+	res := s.db.Model(&models.Ticket{}).
+		Where("status = ? AND created_at < ?", "pending", cutoff).
+		Updates(map[string]interface{}{
+			"status":       "cancelled",
+			"cancelled_at": time.Now(),
+		})
+	return res.RowsAffected, res.Error
 }
 
 // CancelTicket cancels a paid ticket and processes a refund, or deletes a pending ticket.

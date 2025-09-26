@@ -115,6 +115,10 @@ func (s *AuthService) Register(username, email, password, name, mobile string, d
 	}
 
 	// Create user
+	if !s.cfg.SMSVerificationEnabled {
+		// Feature disabled: ignore any incoming mobile and mark verified
+		mobile = ""
+	}
 	user := &models.User{
 		Username:           username,
 		Email:              email,
@@ -147,6 +151,9 @@ func (s *AuthService) Register(username, email, password, name, mobile string, d
 
 	// Optionally create phone verification and send SMS
 	if s.cfg.SMSVerificationEnabled {
+		if user.Mobile == "" {
+			return nil, errors.New("mobile number required when SMS verification is enabled")
+		}
 		if err := s.createOrResendVerification(tx, user.ID, user.Mobile); err != nil {
 			log.Printf("WARN: failed to send verification sms: %v", err)
 		}

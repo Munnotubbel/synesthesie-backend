@@ -90,6 +90,21 @@ func main() {
 		}()
 	}
 
+	// Start periodic cleanup for stale pending tickets
+	if cfg.PendingTicketCleanupEnabled {
+		go func() {
+			for {
+				deleted, err := ticketService.CleanupStalePending()
+				if err != nil {
+					log.Printf("Pending ticket cleanup error: %v", err)
+				} else if deleted > 0 {
+					log.Printf("Pending ticket cleanup: cancelled %d stale tickets", deleted)
+				}
+				time.Sleep(5 * time.Minute)
+			}
+		}()
+	}
+
 	// Create admin user if not exists
 	if err := adminService.CreateDefaultAdmin(); err != nil {
 		log.Printf("Failed to create default admin: %v", err)
@@ -188,7 +203,9 @@ func main() {
 			// User management
 			admin.GET("/users", adminHandler.GetAllUsers)
 			admin.GET("/users/:id", adminHandler.GetUserDetails)
-			admin.PUT("/users/:id/password", adminHandler.ResetUserPassword)
+			if cfg.AdminPasswordResetEnabled {
+				admin.PUT("/users/:id/password", adminHandler.ResetUserPassword)
+			}
 			admin.PUT("/users/:id/active", adminHandler.UpdateUserActive)
 
 			// Service price management

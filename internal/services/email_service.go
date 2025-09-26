@@ -3,11 +3,14 @@ package services
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"mime"
 	"net/smtp"
 	"path/filepath"
+	"time"
 
 	"github.com/synesthesie/backend/internal/config"
 )
@@ -75,7 +78,70 @@ func (s *EmailService) SendPasswordResetLinkEmail(to, name, resetURL string) err
 // SendTicketConfirmation sends a ticket purchase confirmation email
 func (s *EmailService) SendTicketConfirmation(to string, ticketData map[string]interface{}) error {
 	subject := "Ticketbestätigung - Synesthesie"
-	return s.sendEmail(to, subject, "ticket_confirmation.html", ticketData)
+
+	// Prepare both: inline CID image and Data-URI fallback for non-MSO clients
+	// Render HTML once we have possibly injected Data-URI
+	tmpl, exists := s.templates["ticket_confirmation.html"]
+	if !exists {
+		return fmt.Errorf("template %s not found", "ticket_confirmation.html")
+	}
+	// Try to load image bytes
+	imgPath := filepath.Join("pictures", "lageplan.png")
+	imgData, err := ioutil.ReadFile(imgPath)
+	if err == nil {
+		// Provide Data-URI fallback to template
+		ticketData["LageplanDataURI"] = fmt.Sprintf("data:image/png;base64,%s", base64.StdEncoding.EncodeToString(imgData))
+	}
+
+	var htmlBody bytes.Buffer
+	if err := tmpl.Execute(&htmlBody, ticketData); err != nil {
+		return fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	if err != nil {
+		// If the image file was not found/readable, send HTML with Data-URI not set (template still renders)
+		return s.sendEmail(to, subject, "ticket_confirmation.html", ticketData)
+	}
+
+	imgB64 := base64.StdEncoding.EncodeToString(imgData)
+
+	// Build multipart/related message with inline image
+	from := fmt.Sprintf("%s <%s>", s.cfg.SMTPFromName, s.cfg.SMTPFrom)
+	subjectEnc := mime.BEncoding.Encode("UTF-8", subject)
+	boundary := fmt.Sprintf("rel-%d", time.Now().UnixNano())
+
+	var msg bytes.Buffer
+	msg.WriteString(fmt.Sprintf("From: %s\r\n", from))
+	msg.WriteString(fmt.Sprintf("To: %s\r\n", to))
+	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subjectEnc))
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString(fmt.Sprintf("Content-Type: multipart/related; type=\"text/html\"; boundary=%q\r\n", boundary))
+	msg.WriteString("\r\n")
+
+	// HTML part
+	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	msg.WriteString("Content-Type: text/html; charset=\"UTF-8\"\r\n\r\n")
+	msg.WriteString(htmlBody.String())
+	msg.WriteString("\r\n")
+
+	// Inline image part (CID)
+	msg.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+	msg.WriteString("Content-Type: image/png; name=\"lageplan.png\"\r\n")
+	msg.WriteString("Content-Transfer-Encoding: base64\r\n")
+	msg.WriteString("Content-ID: <lageplan>\r\n")
+	msg.WriteString("Content-Disposition: inline; filename=\"lageplan.png\"\r\n")
+	msg.WriteString("Content-Location: lageplan.png\r\n\r\n")
+	for i := 0; i < len(imgB64); i += 76 {
+		end := i + 76
+		if end > len(imgB64) {
+			end = len(imgB64)
+		}
+		msg.WriteString(imgB64[i:end])
+		msg.WriteString("\r\n")
+	}
+	msg.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
+
+	return s.sendSMTP(to, msg.Bytes())
 }
 
 // SendEventReminder sends an event reminder email
