@@ -994,6 +994,90 @@ func (h *AdminHandler) ExportInvitesCSV(c *gin.Context) {
 	c.Data(http.StatusOK, "text/csv", buf.Bytes())
 }
 
+// ExportInvitesBubbleCSV exports bubble invites as CSV with Public-ID and full register link
+func (h *AdminHandler) ExportInvitesBubbleCSV(c *gin.Context) {
+	// Fetch unexported (or all) invites for bubble group
+	invites, err := h.inviteService.CreateBulkInviteCodesWithGroup(0, "bubble")
+	_ = invites
+	// Reuse existing listing to avoid creating; list all unexported and filter
+	list, err := h.inviteService.ListUnexportedInvites(0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query invites"})
+		return
+	}
+	bubble := make([]*models.InviteCode, 0)
+	for _, inv := range list {
+		if inv.Group == "bubble" {
+			bubble = append(bubble, inv)
+		}
+	}
+	if len(bubble) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "no_invites_to_export"})
+		return
+	}
+	// Build CSV
+	base := strings.TrimRight(h.adminService.GetConfig().FrontendURL, "/") + "/register?invite="
+	buf := &bytes.Buffer{}
+	w := csv.NewWriter(buf)
+	_ = w.Write([]string{"Public-ID", "QR-Link"})
+	ids := make([]uuid.UUID, 0, len(bubble))
+	for _, inv := range bubble {
+		pub := ""
+		if inv.PublicID != nil {
+			pub = *inv.PublicID
+		}
+		_ = w.Write([]string{pub, base + inv.Code})
+		ids = append(ids, inv.ID)
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+	// Mark exported
+	_ = h.inviteService.MarkInvitesExported(ids)
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=invites_bubble.csv")
+	c.Data(http.StatusOK, "text/csv", buf.Bytes())
+}
+
+// ExportInvitesGuestsCSV exports guests invites as CSV with full register link only
+func (h *AdminHandler) ExportInvitesGuestsCSV(c *gin.Context) {
+	list, err := h.inviteService.ListUnexportedInvites(0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query invites"})
+		return
+	}
+	guests := make([]*models.InviteCode, 0)
+	for _, inv := range list {
+		if inv.Group == "guests" {
+			guests = append(guests, inv)
+		}
+	}
+	if len(guests) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "no_invites_to_export"})
+		return
+	}
+	base := strings.TrimRight(h.adminService.GetConfig().FrontendURL, "/") + "/register?invite="
+	buf := &bytes.Buffer{}
+	w := csv.NewWriter(buf)
+	_ = w.Write([]string{"QR-Link"})
+	ids := make([]uuid.UUID, 0, len(guests))
+	for _, inv := range guests {
+		_ = w.Write([]string{base + inv.Code})
+		ids = append(ids, inv.ID)
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+	_ = h.inviteService.MarkInvitesExported(ids)
+	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Disposition", "attachment; filename=invites_guests.csv")
+	c.Data(http.StatusOK, "text/csv", buf.Bytes())
+}
+
 // UpdateUserActive allows admin to set is_active for a user
 func (h *AdminHandler) UpdateUserActive(c *gin.Context) {
 	userIDStr := c.Param("id")

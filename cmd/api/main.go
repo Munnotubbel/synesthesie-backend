@@ -199,6 +199,8 @@ func main() {
 			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
 			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
 			admin.GET("/invites/export.csv", adminHandler.ExportInvitesCSV)
+			admin.GET("/invites/export_bubble.csv", adminHandler.ExportInvitesBubbleCSV)
+			admin.GET("/invites/export_guests.csv", adminHandler.ExportInvitesGuestsCSV)
 			admin.PUT("/users/:id/group", adminHandler.ReassignUserGroup)
 
 			// User management
