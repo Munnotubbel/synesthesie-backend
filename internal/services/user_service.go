@@ -74,10 +74,10 @@ func (s *UserService) UpdateUserProfile(userID uuid.UUID, updates map[string]int
 	return nil
 }
 
-// UpdateUserGroup updates the user's group to 'bubble' or 'guests'
+// UpdateUserGroup updates the user's group to 'bubble', 'guests' or 'plus'
 func (s *UserService) UpdateUserGroup(userID uuid.UUID, group string) error {
-	if group != "bubble" && group != "guests" {
-		return errors.New("invalid group; must be 'bubble' or 'guests'")
+	if group != "bubble" && group != "guests" && group != "plus" {
+		return errors.New("invalid group; must be 'bubble', 'guests' or 'plus'")
 	}
 	result := s.db.Model(&models.User{}).Where("id = ?", userID).Update("group", group)
 	if result.Error != nil {

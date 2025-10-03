@@ -75,6 +75,9 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 	if event.AllowedGroup == "bubble" && user.Group != "bubble" {
 		return nil, nil, errors.New("event not available for your group")
 	}
+	if event.AllowedGroup == "plus" && user.Group != "plus" {
+		return nil, nil, errors.New("event not available for your group")
+	}
 
 	// Check availability
 	availableSpots := event.GetAvailableSpots(s.db)
@@ -86,6 +89,9 @@ func (s *TicketService) CreateTicket(userID, eventID uuid.UUID, includesPickup b
 	basePrice := event.GuestsPrice
 	if user.Group == "bubble" {
 		basePrice = event.BubblePrice
+	}
+	if user.Group == "plus" {
+		basePrice = event.PlusPrice
 	}
 
 	// Get pickup service price

@@ -165,11 +165,17 @@ func (h *UserHandler) GetUserEvents(c *gin.Context) {
 		if event.AllowedGroup == "bubble" && user.Group != "bubble" {
 			continue
 		}
+		if event.AllowedGroup == "plus" && user.Group != "plus" {
+			continue
+		}
 
 		availableSpots := event.GetAvailableSpots(h.eventService.GetDB())
 		price := event.GuestsPrice
 		if user.Group == "bubble" {
 			price = event.BubblePrice
+		}
+		if user.Group == "plus" {
+			price = event.PlusPrice
 		}
 
 		item := gin.H{

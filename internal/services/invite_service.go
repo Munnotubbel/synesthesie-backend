@@ -29,6 +29,40 @@ func generateSecureCode(numBytes int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// generateRandomPublicID generates a random public ID with format: P + 4 alphanumeric characters (e.g., PA12, P3X9)
+func generateRandomPublicID() (string, error) {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	result := make([]byte, 5)
+	result[0] = 'P'
+	for i := 0; i < 4; i++ {
+		result[i+1] = chars[int(b[i])%len(chars)]
+	}
+	return string(result), nil
+}
+
+// generateUniqueRandomPublicID generates a unique random public ID for the plus group
+func (s *InviteService) generateUniqueRandomPublicID(tx *gorm.DB, maxAttempts int) (string, error) {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		pubID, err := generateRandomPublicID()
+		if err != nil {
+			return "", err
+		}
+		// Check if this public_id already exists
+		var count int64
+		if err := tx.Model(&models.InviteCode{}).Where("public_id = ?", pubID).Count(&count).Error; err != nil {
+			return "", err
+		}
+		if count == 0 {
+			return pubID, nil
+		}
+	}
+	return "", errors.New("failed to generate unique public_id after max attempts")
+}
+
 // CreateInviteCode creates a new invite code (default group: guests)
 func (s *InviteService) CreateInviteCode() (*models.InviteCode, error) {
 	code, err := generateSecureCode(32)
@@ -47,14 +81,38 @@ func (s *InviteService) CreateInviteCode() (*models.InviteCode, error) {
 	return invite, nil
 }
 
-// CreateInviteCodeWithGroup creates a new invite code for a specific group (bubble|guests)
-// guests → PublicID NULL; bubble → PublicID sequential numeric (1..1000)
+// CreateInviteCodeWithGroup creates a new invite code for a specific group (bubble|guests|plus)
+// guests → PublicID NULL; bubble → PublicID sequential numeric (1..1000); plus → PublicID random (B + 4 chars)
 func (s *InviteService) CreateInviteCodeWithGroup(group string) (*models.InviteCode, error) {
-	if group != "bubble" && group != "guests" {
-		return nil, errors.New("invalid group; must be 'bubble' or 'guests'")
+	if group != "bubble" && group != "guests" && group != "plus" {
+		return nil, errors.New("invalid group; must be 'bubble', 'guests' or 'plus'")
 	}
 	if group == "guests" {
 		return s.CreateInviteCode()
+	}
+	if group == "plus" {
+		// plus: generate random PublicID (B + 4 alphanumeric)
+		var created *models.InviteCode
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			pubID, err := s.generateUniqueRandomPublicID(tx, 100)
+			if err != nil {
+				return err
+			}
+			code, err := generateSecureCode(32)
+			if err != nil {
+				return err
+			}
+			invite := &models.InviteCode{Status: models.InviteStatusNew, Group: "plus", Code: code, PublicID: &pubID}
+			if err := tx.Create(invite).Error; err != nil {
+				return err
+			}
+			created = invite
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return created, nil
 	}
 	// bubble: allocate next sequential PublicID
 	var created *models.InviteCode
@@ -120,12 +178,39 @@ func (s *InviteService) CreateBulkInviteCodesWithGroup(count int, group string) 
 	if count <= 0 || count > 100 {
 		return nil, errors.New("count must be between 1 and 100")
 	}
-	if group != "bubble" && group != "guests" {
-		return nil, errors.New("invalid group; must be 'bubble' or 'guests'")
+	if group != "bubble" && group != "guests" && group != "plus" {
+		return nil, errors.New("invalid group; must be 'bubble', 'guests' or 'plus'")
 	}
 	if group == "guests" {
 		return s.CreateBulkInviteCodes(count)
 	}
+	if group == "plus" {
+		// plus: generate random PublicID for each
+		var invites []*models.InviteCode
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			invites = make([]*models.InviteCode, 0, count)
+			for i := 0; i < count; i++ {
+				pubID, err := s.generateUniqueRandomPublicID(tx, 100)
+				if err != nil {
+					return err
+				}
+				code, err := generateSecureCode(32)
+				if err != nil {
+					return err
+				}
+				invites = append(invites, &models.InviteCode{Status: models.InviteStatusNew, Group: "plus", Code: code, PublicID: &pubID})
+			}
+			if err := tx.Create(&invites).Error; err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return invites, nil
+	}
+	// bubble: sequential
 	var invites []*models.InviteCode
 	err := s.db.Transaction(func(tx *gorm.DB) error {
 		var setting models.SystemSetting
@@ -236,15 +321,8 @@ func (s *InviteService) GetAllInvites(offset, limit int, includeUsed bool, group
 	var total int64
 
 	query := s.db.Model(&models.InviteCode{})
-	if !includeUsed {
-		query = query.Where("status != ?", models.InviteStatusRegistered)
-	}
-	if group != "" {
-		if group != "bubble" && group != "guests" {
-			return nil, 0, errors.New("invalid group; must be 'bubble' or 'guests'")
-		}
-		query = query.Where("\"group\" = ?", group)
-	}
+
+	// Status filter takes precedence over includeUsed
 	if status != "" {
 		switch status {
 		case models.InviteStatusNew, models.InviteStatusViewed, models.InviteStatusRegistered, models.InviteStatusInactive:
@@ -252,6 +330,16 @@ func (s *InviteService) GetAllInvites(offset, limit int, includeUsed bool, group
 		default:
 			return nil, 0, errors.New("invalid status; must be new|viewed|registered|inactive")
 		}
+	} else if !includeUsed {
+		// Only apply includeUsed filter if no explicit status filter is set
+		query = query.Where("status != ?", models.InviteStatusRegistered)
+	}
+
+	if group != "" {
+		if group != "bubble" && group != "guests" && group != "plus" {
+			return nil, 0, errors.New("invalid group; must be 'bubble', 'guests' or 'plus'")
+		}
+		query = query.Where("\"group\" = ?", group)
 	}
 
 	// Count total
@@ -289,8 +377,8 @@ func (s *InviteService) GetActiveInvites(offset, limit int) ([]*models.InviteCod
 
 // GetActiveInvitesByGroup retrieves active invites filtered by group
 func (s *InviteService) GetActiveInvitesByGroup(offset, limit int, group string) ([]*models.InviteCode, int64, error) {
-	if group != "bubble" && group != "guests" {
-		return nil, 0, errors.New("invalid group; must be 'bubble' or 'guests'")
+	if group != "bubble" && group != "guests" && group != "plus" {
+		return nil, 0, errors.New("invalid group; must be 'bubble', 'guests' or 'plus'")
 	}
 	var invites []*models.InviteCode
 	var total int64
@@ -330,9 +418,9 @@ func (s *InviteService) MarkInviteAsRegistered(code string, userID uuid.UUID) er
 	return s.db.Save(&invite).Error
 }
 
-// GetInviteStats returns statistics about invite codes
-func (s *InviteService) GetInviteStats() (map[string]int64, error) {
-	stats := make(map[string]int64)
+// GetInviteStats returns statistics about invite codes with registered users
+func (s *InviteService) GetInviteStats() (map[string]interface{}, error) {
+	stats := make(map[string]interface{})
 
 	// Total invites
 	var total int64
@@ -348,12 +436,13 @@ func (s *InviteService) GetInviteStats() (map[string]int64, error) {
 	}
 	stats["new"] = newInvites
 
-	// Viewed invites
+	// Viewed invites (considered "used" in UI context)
 	var viewed int64
 	if err := s.db.Model(&models.InviteCode{}).Where("status = ?", models.InviteStatusViewed).Count(&viewed).Error; err != nil {
 		return nil, err
 	}
 	stats["viewed"] = viewed
+	stats["used"] = viewed // Alias: viewed codes are "used" in the sense that they've been accessed
 
 	// Registered invites
 	var registered int64
@@ -368,6 +457,29 @@ func (s *InviteService) GetInviteStats() (map[string]int64, error) {
 		return nil, err
 	}
 	stats["inactive"] = inactive
+
+	// Get all registered users (with invite code preloaded)
+	var registeredInvites []*models.InviteCode
+	if err := s.db.Preload("User").Where("status = ?", models.InviteStatusRegistered).Find(&registeredInvites).Error; err != nil {
+		return nil, err
+	}
+
+	registeredUsers := make([]map[string]interface{}, 0, len(registeredInvites))
+	for _, invite := range registeredInvites {
+		if invite.User != nil {
+			registeredUsers = append(registeredUsers, map[string]interface{}{
+				"id":         invite.User.ID,
+				"username":   invite.User.Username,
+				"name":       invite.User.Name,
+				"email":      invite.User.Email,
+				"group":      invite.User.Group,
+				"invite_id":  invite.ID,
+				"public_id":  invite.PublicID,
+				"created_at": invite.User.CreatedAt,
+			})
+		}
+	}
+	stats["registered_users"] = registeredUsers
 
 	return stats, nil
 }

@@ -23,20 +23,24 @@ type AdminHandler struct {
 	eventService   *services.EventService
 	inviteService  *services.InviteService
 	userService    *services.UserService
+	ticketService  *services.TicketService
 	storageService *services.StorageService
 	s3Service      *services.S3Service
 	qrService      *services.QRService
+	backupService  *services.BackupService
 }
 
-func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService, storageService *services.StorageService, s3Service *services.S3Service, qrService *services.QRService) *AdminHandler {
+func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService, ticketService *services.TicketService, storageService *services.StorageService, s3Service *services.S3Service, qrService *services.QRService, backupService *services.BackupService) *AdminHandler {
 	return &AdminHandler{
 		adminService:   adminService,
 		eventService:   eventService,
+		ticketService:  ticketService,
 		inviteService:  inviteService,
 		userService:    userService,
 		storageService: storageService,
 		s3Service:      s3Service,
 		qrService:      qrService,
+		backupService:  backupService,
 	}
 }
 
@@ -76,6 +80,7 @@ func (h *AdminHandler) GetAllEvents(c *gin.Context) {
 			"price":            event.Price,
 			"guests_price":     event.GuestsPrice,
 			"bubble_price":     event.BubblePrice,
+			"plus_price":       event.PlusPrice,
 			"allowed_group":    event.AllowedGroup,
 			"is_active":        event.IsActive,
 			"available_spots":  availableSpots,
@@ -105,9 +110,10 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		TimeFrom        string    `json:"time_from" binding:"required"`
 		TimeTo          string    `json:"time_to" binding:"required"`
 		MaxParticipants int       `json:"max_participants" binding:"required,min=1"`
-		AllowedGroup    string    `json:"allowed_group"` // all|guests|bubble, default all
+		AllowedGroup    string    `json:"allowed_group"` // all|guests|bubble|plus, default all
 		GuestsPrice     float64   `json:"guests_price"`  // default 200
 		BubblePrice     float64   `json:"bubble_price"`  // default 35
+		PlusPrice       float64   `json:"plus_price"`    // default 50
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -126,6 +132,7 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		AllowedGroup:    req.AllowedGroup,
 		GuestsPrice:     req.GuestsPrice,
 		BubblePrice:     req.BubblePrice,
+		PlusPrice:       req.PlusPrice,
 	}
 
 	if err := h.eventService.CreateEvent(event); err != nil {
@@ -141,7 +148,7 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		var users []*models.User
 		group := strings.ToLower(event.AllowedGroup)
 		q := h.eventService.GetDB().Model(&models.User{}).Where("is_active = ?", true)
-		if group == "guests" || group == "bubble" {
+		if group == "guests" || group == "bubble" || group == "plus" {
 			q = q.Where("\"group\" = ?", group)
 		}
 		if err := q.Find(&users).Error; err != nil {
@@ -185,6 +192,7 @@ func (h *AdminHandler) UpdateEvent(c *gin.Context) {
 		AllowedGroup    string    `json:"allowed_group"`
 		GuestsPrice     *float64  `json:"guests_price"`
 		BubblePrice     *float64  `json:"bubble_price"`
+		PlusPrice       *float64  `json:"plus_price"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -222,6 +230,9 @@ func (h *AdminHandler) UpdateEvent(c *gin.Context) {
 	}
 	if req.BubblePrice != nil {
 		updates["bubble_price"] = *req.BubblePrice
+	}
+	if req.PlusPrice != nil {
+		updates["plus_price"] = *req.PlusPrice
 	}
 
 	if err := h.eventService.UpdateEvent(eventID, updates); err != nil {
@@ -319,6 +330,238 @@ func (h *AdminHandler) RefundEventTickets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Tickets refunded successfully"})
 }
 
+// GetEventDetails retrieves detailed information about an event including participant list
+func (h *AdminHandler) GetEventDetails(c *gin.Context) {
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
+		return
+	}
+
+	// Get event
+	event, err := h.eventService.GetEventByID(eventID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
+		return
+	}
+
+	// Get all tickets for the event (paid only)
+	tickets, err := h.ticketService.GetEventTickets(eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve tickets"})
+		return
+	}
+
+	// Group participants by user group and sort alphabetically
+	type Participant struct {
+		Name   string `json:"name"`
+		Email  string `json:"email"`
+		Drink1 string `json:"drink1"`
+		Drink2 string `json:"drink2"`
+		Drink3 string `json:"drink3"`
+		Group  string `json:"group"`
+	}
+
+	groupedParticipants := make(map[string][]Participant)
+	groupedParticipants["guests"] = []Participant{}
+	groupedParticipants["bubble"] = []Participant{}
+	groupedParticipants["plus"] = []Participant{}
+
+	for _, ticket := range tickets {
+		if ticket.Status != "paid" {
+			continue
+		}
+		if ticket.User.ID == uuid.Nil {
+			continue
+		}
+
+		p := Participant{
+			Name:   ticket.User.Name,
+			Email:  ticket.User.Email,
+			Drink1: ticket.User.Drink1,
+			Drink2: ticket.User.Drink2,
+			Drink3: ticket.User.Drink3,
+			Group:  ticket.User.Group,
+		}
+
+		group := ticket.User.Group
+		if group != "guests" && group != "bubble" && group != "plus" {
+			group = "guests" // fallback
+		}
+		groupedParticipants[group] = append(groupedParticipants[group], p)
+	}
+
+	// Sort each group alphabetically by name
+	for group := range groupedParticipants {
+		participants := groupedParticipants[group]
+		// Simple bubble sort by name
+		for i := 0; i < len(participants); i++ {
+			for j := i + 1; j < len(participants); j++ {
+				if strings.ToLower(participants[i].Name) > strings.ToLower(participants[j].Name) {
+					participants[i], participants[j] = participants[j], participants[i]
+				}
+			}
+		}
+		groupedParticipants[group] = participants
+	}
+
+	// Calculate total participants count
+	totalParticipants := len(groupedParticipants["guests"]) + len(groupedParticipants["bubble"]) + len(groupedParticipants["plus"])
+
+	// Calculate available spots
+	availableSpots := event.GetAvailableSpots(h.eventService.GetDB())
+
+	// Get turnover
+	turnoverMap, _ := h.eventService.GetTurnoverByEventIDs([]uuid.UUID{event.ID})
+	turnover := turnoverMap[event.ID]
+
+	c.JSON(http.StatusOK, gin.H{
+		"event": gin.H{
+			"id":                 event.ID,
+			"name":               event.Name,
+			"description":        event.Description,
+			"date_from":          event.DateFrom,
+			"date_to":            event.DateTo,
+			"time_from":          event.TimeFrom,
+			"time_to":            event.TimeTo,
+			"max_participants":   event.MaxParticipants,
+			"guests_price":       event.GuestsPrice,
+			"bubble_price":       event.BubblePrice,
+			"plus_price":         event.PlusPrice,
+			"allowed_group":      event.AllowedGroup,
+			"is_active":          event.IsActive,
+			"available_spots":    availableSpots,
+			"total_participants": totalParticipants,
+			"turnover":           turnover,
+			"created_at":         event.CreatedAt,
+			"updated_at":         event.UpdatedAt,
+		},
+		"participants": groupedParticipants,
+	})
+}
+
+// ExportEventParticipantsCSV exports event participants as CSV grouped by user group
+func (h *AdminHandler) ExportEventParticipantsCSV(c *gin.Context) {
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
+		return
+	}
+
+	// Get event
+	event, err := h.eventService.GetEventByID(eventID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
+		return
+	}
+
+	// Get all tickets for the event
+	tickets, err := h.ticketService.GetEventTickets(eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve tickets"})
+		return
+	}
+
+	// Group participants by user group
+	type Participant struct {
+		Name   string
+		Email  string
+		Drink1 string
+		Drink2 string
+		Drink3 string
+		Group  string
+	}
+
+	var participants []Participant
+	for _, ticket := range tickets {
+		// Only include paid tickets
+		if ticket.Status != "paid" {
+			continue
+		}
+
+		// Check if user data is loaded
+		if ticket.UserID == uuid.Nil || ticket.User.ID == uuid.Nil {
+			continue
+		}
+
+		p := Participant{
+			Name:   ticket.User.Name,
+			Email:  ticket.User.Email,
+			Drink1: ticket.User.Drink1,
+			Drink2: ticket.User.Drink2,
+			Drink3: ticket.User.Drink3,
+			Group:  ticket.User.Group,
+		}
+		participants = append(participants, p)
+	}
+
+	// Sort by group, then by name (even if empty, we still create the CSV)
+	for i := 0; i < len(participants); i++ {
+		for j := i + 1; j < len(participants); j++ {
+			// First sort by group
+			if participants[i].Group > participants[j].Group {
+				participants[i], participants[j] = participants[j], participants[i]
+			} else if participants[i].Group == participants[j].Group {
+				// Then sort alphabetically by name within same group
+				if strings.ToLower(participants[i].Name) > strings.ToLower(participants[j].Name) {
+					participants[i], participants[j] = participants[j], participants[i]
+				}
+			}
+		}
+	}
+
+	// Create CSV buffer
+	buf := &bytes.Buffer{}
+	// UTF-8 BOM for Excel compatibility
+	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
+	w := csv.NewWriter(buf)
+
+	// Write separator hint for Excel
+	_ = w.Write([]string{"sep=,"})
+
+	// Write header
+	_ = w.Write([]string{"Gruppe", "Name", "Email", "Lieblingsgetraenk 1", "Lieblingsgetraenk 2", "Lieblingsgetraenk 3"})
+
+	// Write participants
+	for _, p := range participants {
+		groupName := p.Group
+		if groupName == "" {
+			groupName = "guests"
+		}
+		_ = w.Write([]string{
+			groupName,
+			p.Name,
+			p.Email,
+			p.Drink1,
+			p.Drink2,
+			p.Drink3,
+		})
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+
+	// Create filename with event name and date
+	eventDate := event.DateFrom.Format("02-01-2006")
+	safe := strings.ReplaceAll(event.Name, " ", "_")
+	safe = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, safe)
+	filename := fmt.Sprintf("Teilnehmer_%s_%s.csv", eventDate, safe)
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
+}
+
 // ExportEventDrinksXLSX exports favorite drinks statistics for event participants as an Excel file
 func (h *AdminHandler) ExportEventDrinksXLSX(c *gin.Context) {
 	eventIDStr := c.Param("id")
@@ -337,24 +580,47 @@ func (h *AdminHandler) ExportEventDrinksXLSX(c *gin.Context) {
 	}
 
 	// Aggregate drinks across participants with paid tickets
-	count := func() map[string]int {
-		m := make(map[string]int)
-		for _, t := range tickets {
-			if t.Status != "paid" {
-				continue
-			}
-			if t.User.Drink1 != "" {
-				m[strings.TrimSpace(t.User.Drink1)]++
-			}
-			if t.User.Drink2 != "" {
-				m[strings.TrimSpace(t.User.Drink2)]++
-			}
-			if t.User.Drink3 != "" {
-				m[strings.TrimSpace(t.User.Drink3)]++
-			}
+	// Map: drink name -> count and list of users
+	type DrinkInfo struct {
+		Count int
+		Users []string
+	}
+	drinkMap := make(map[string]*DrinkInfo)
+
+	for _, t := range tickets {
+		if t.Status != "paid" {
+			continue
 		}
-		return m
-	}()
+		userName := t.User.Name
+		if userName == "" {
+			userName = t.User.Username
+		}
+
+		if t.User.Drink1 != "" {
+			drink := strings.TrimSpace(t.User.Drink1)
+			if drinkMap[drink] == nil {
+				drinkMap[drink] = &DrinkInfo{Count: 0, Users: []string{}}
+			}
+			drinkMap[drink].Count++
+			drinkMap[drink].Users = append(drinkMap[drink].Users, userName)
+		}
+		if t.User.Drink2 != "" {
+			drink := strings.TrimSpace(t.User.Drink2)
+			if drinkMap[drink] == nil {
+				drinkMap[drink] = &DrinkInfo{Count: 0, Users: []string{}}
+			}
+			drinkMap[drink].Count++
+			drinkMap[drink].Users = append(drinkMap[drink].Users, userName)
+		}
+		if t.User.Drink3 != "" {
+			drink := strings.TrimSpace(t.User.Drink3)
+			if drinkMap[drink] == nil {
+				drinkMap[drink] = &DrinkInfo{Count: 0, Users: []string{}}
+			}
+			drinkMap[drink].Count++
+			drinkMap[drink].Users = append(drinkMap[drink].Users, userName)
+		}
+	}
 
 	// If no paid participants, return a clear message (like pickup CSV behavior)
 	hasPaid := false
@@ -371,11 +637,19 @@ func (h *AdminHandler) ExportEventDrinksXLSX(c *gin.Context) {
 
 	// Prepare CSV (Excel-compatible)
 	buf := &bytes.Buffer{}
+	// UTF-8 BOM for Excel compatibility
+	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(buf)
-	_ = w.Write([]string{"Drink", "Anzahl"})
 
-	keys := make([]string, 0, len(count))
-	for k := range count {
+	// Write separator hint for Excel
+	_ = w.Write([]string{"sep=,"})
+
+	// Header with 3 columns
+	_ = w.Write([]string{"Getränk", "Anzahl", "Gewählt von"})
+
+	// Sort drinks alphabetically
+	keys := make([]string, 0, len(drinkMap))
+	for k := range drinkMap {
 		keys = append(keys, k)
 	}
 	for i := 0; i < len(keys); i++ {
@@ -385,8 +659,12 @@ func (h *AdminHandler) ExportEventDrinksXLSX(c *gin.Context) {
 			}
 		}
 	}
-	for _, k := range keys {
-		_ = w.Write([]string{k, fmt.Sprintf("%d", count[k])})
+
+	// Write rows with users
+	for _, drink := range keys {
+		info := drinkMap[drink]
+		userList := strings.Join(info.Users, ", ")
+		_ = w.Write([]string{drink, fmt.Sprintf("%d", info.Count), userList})
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
@@ -471,11 +749,22 @@ func (h *AdminHandler) GetAllInvites(c *gin.Context) {
 	})
 }
 
+// GetInviteStats retrieves statistics about invite codes
+func (h *AdminHandler) GetInviteStats(c *gin.Context) {
+	stats, err := h.inviteService.GetInviteStats()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve invite statistics"})
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
 // CreateInvite creates a new invite code
 func (h *AdminHandler) CreateInvite(c *gin.Context) {
 	var req struct {
 		Count int    `json:"count"`
-		Group string `json:"group"` // optional: "bubble"|"guests"
+		Group string `json:"group"` // optional: "bubble"|"guests"|"plus"
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -485,8 +774,8 @@ func (h *AdminHandler) CreateInvite(c *gin.Context) {
 		req.Count = 1
 	}
 
-	if req.Group != "" && req.Group != "bubble" && req.Group != "guests" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+	if req.Group != "" && req.Group != "bubble" && req.Group != "guests" && req.Group != "plus" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble', 'guests' or 'plus'"})
 		return
 	}
 
@@ -556,8 +845,8 @@ func (h *AdminHandler) ReassignUserGroup(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Group != "bubble" && req.Group != "guests" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+	if req.Group != "bubble" && req.Group != "guests" && req.Group != "plus" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble', 'guests' or 'plus'"})
 		return
 	}
 
@@ -666,6 +955,10 @@ func (h *AdminHandler) GetUserDetails(c *gin.Context) {
 			"username":             user.Username,
 			"email":                user.Email,
 			"name":                 user.Name,
+			"mobile":               user.Mobile,
+			"drink1":               user.Drink1,
+			"drink2":               user.Drink2,
+			"drink3":               user.Drink3,
 			"group":                user.Group,
 			"is_active":            user.IsActive,
 			"registered_with_code": user.RegisteredWithCode,
@@ -893,9 +1186,9 @@ func (h *AdminHandler) GetInviteQR(c *gin.Context) {
 // ExportInvitesCSV exports not-yet-exported invites as CSV, with group-specific structure
 func (h *AdminHandler) ExportInvitesCSV(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "0"))
-	groupFilter := strings.TrimSpace(c.Query("group")) // optional: "bubble"|"guests"
-	if groupFilter != "" && groupFilter != "bubble" && groupFilter != "guests" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble' or 'guests'"})
+	groupFilter := strings.TrimSpace(c.Query("group")) // optional: "bubble"|"guests"|"plus"
+	if groupFilter != "" && groupFilter != "bubble" && groupFilter != "guests" && groupFilter != "plus" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid group; must be 'bubble', 'guests' or 'plus'"})
 		return
 	}
 
@@ -1060,11 +1353,17 @@ func (h *AdminHandler) ExportInvitesGuestsCSV(c *gin.Context) {
 	}
 	base := strings.TrimRight(h.adminService.GetConfig().FrontendURL, "/") + "/register?invite="
 	buf := &bytes.Buffer{}
+	// BOM + sep=, sorgt dafür, dass Excel/LibreOffice einheitlich Komma als Trenner nutzt
+	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
+	_, _ = buf.WriteString("sep=,\n")
 	w := csv.NewWriter(buf)
-	_ = w.Write([]string{"QR-Link"})
+	// EXAKT wie bubble: zwei Spalten, Public-ID + QR-Link (Public-ID leer bei guests)
+	_ = w.Write([]string{"Public-ID", "QR-Link"})
 	ids := make([]uuid.UUID, 0, len(guests))
 	for _, inv := range guests {
-		_ = w.Write([]string{base + inv.Code})
+		pub := ""
+		url := base + inv.Code
+		_ = w.Write([]string{pub, url})
 		ids = append(ids, inv.ID)
 	}
 	w.Flush()
@@ -1073,9 +1372,54 @@ func (h *AdminHandler) ExportInvitesGuestsCSV(c *gin.Context) {
 		return
 	}
 	_ = h.inviteService.MarkInvitesExported(ids)
-	c.Header("Content-Type", "text/csv")
+	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=invites_guests.csv")
-	c.Data(http.StatusOK, "text/csv", buf.Bytes())
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
+}
+
+// ExportInvitesPlusCSV exports plus invites as CSV with Public-ID and full register link
+func (h *AdminHandler) ExportInvitesPlusCSV(c *gin.Context) {
+	list, err := h.inviteService.ListUnexportedInvites(0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to query invites"})
+		return
+	}
+	plus := make([]*models.InviteCode, 0)
+	for _, inv := range list {
+		if inv.Group == "plus" {
+			plus = append(plus, inv)
+		}
+	}
+	if len(plus) == 0 {
+		c.JSON(http.StatusOK, gin.H{"status": "no_invites_to_export"})
+		return
+	}
+	base := strings.TrimRight(h.adminService.GetConfig().FrontendURL, "/") + "/register?invite="
+	buf := &bytes.Buffer{}
+	// BOM + sep=, for Excel compatibility
+	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
+	_, _ = buf.WriteString("sep=,\n")
+	w := csv.NewWriter(buf)
+	_ = w.Write([]string{"Public-ID", "QR-Link"})
+	ids := make([]uuid.UUID, 0, len(plus))
+	for _, inv := range plus {
+		pub := ""
+		if inv.PublicID != nil {
+			pub = *inv.PublicID
+		}
+		url := base + inv.Code
+		_ = w.Write([]string{pub, url})
+		ids = append(ids, inv.ID)
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
+		return
+	}
+	_ = h.inviteService.MarkInvitesExported(ids)
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=invites_plus.csv")
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
 }
 
 // UpdateUserActive allows admin to set is_active for a user
@@ -1181,4 +1525,87 @@ func (h *AdminHandler) ExportPickupCSV(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=pickups.csv")
 	c.Data(http.StatusOK, "text/csv", buf.Bytes())
+}
+
+// GetAllBackups retrieves all backups with pagination
+func (h *AdminHandler) GetAllBackups(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset := (page - 1) * limit
+
+	backups, total, err := h.backupService.ListBackups(offset, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve backups"})
+		return
+	}
+
+	backupList := make([]gin.H, len(backups))
+	for i, backup := range backups {
+		backupList[i] = gin.H{
+			"id":            backup.ID,
+			"filename":      backup.Filename,
+			"s3_key":        backup.S3Key,
+			"size_bytes":    backup.SizeBytes,
+			"status":        backup.Status,
+			"type":          backup.Type,
+			"started_at":    backup.StartedAt,
+			"completed_at":  backup.CompletedAt,
+			"error_message": backup.ErrorMessage,
+			"created_at":    backup.CreatedAt,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"backups": backupList,
+		"pagination": gin.H{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+	})
+}
+
+// GetBackupStats retrieves statistics about backups
+func (h *AdminHandler) GetBackupStats(c *gin.Context) {
+	stats, err := h.backupService.GetBackupStats()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve backup stats"})
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
+}
+
+// SyncBackupsFromS3 synchronizes backup records from S3
+func (h *AdminHandler) SyncBackupsFromS3(c *gin.Context) {
+	synced, err := h.backupService.SyncBackupsFromS3()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to sync backups: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Backups synchronized successfully",
+		"synced":  synced,
+	})
+}
+
+// DeleteBackup deletes a backup record and optionally the S3 object
+func (h *AdminHandler) DeleteBackup(c *gin.Context) {
+	backupID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid backup ID"})
+		return
+	}
+
+	deleteFromS3 := c.Query("delete_from_s3") == "true"
+
+	if err := h.backupService.DeleteBackup(backupID, deleteFromS3); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to delete backup: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Backup deleted successfully",
+	})
 }

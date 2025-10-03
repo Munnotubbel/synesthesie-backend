@@ -165,3 +165,11 @@ func (s *S3Service) ListMediaKeys(ctx context.Context, bucket, prefix string, ma
 	}
 	return keys, nil
 }
+
+// GetBackupClient returns the S3 client for backup operations
+func (s *S3Service) GetBackupClient() (*s3.Client, error) {
+	if s.backupClient == nil {
+		return nil, fmt.Errorf("backup S3 client not configured")
+	}
+	return s.backupClient, nil
+}

@@ -92,8 +92,8 @@ func (s *EventService) CreateEvent(event *models.Event) error {
 	if event.AllowedGroup == "" {
 		event.AllowedGroup = "all"
 	}
-	if event.AllowedGroup != "all" && event.AllowedGroup != "guests" && event.AllowedGroup != "bubble" {
-		return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
+	if event.AllowedGroup != "all" && event.AllowedGroup != "guests" && event.AllowedGroup != "bubble" && event.AllowedGroup != "plus" {
+		return errors.New("invalid allowed_group; must be 'all', 'guests', 'bubble' or 'plus'")
 	}
 
 	// Default prices if unset
@@ -103,7 +103,10 @@ func (s *EventService) CreateEvent(event *models.Event) error {
 	if event.BubblePrice <= 0 {
 		event.BubblePrice = 35
 	}
-	if event.GuestsPrice < 0 || event.BubblePrice < 0 {
+	if event.PlusPrice <= 0 {
+		event.PlusPrice = 50
+	}
+	if event.GuestsPrice < 0 || event.BubblePrice < 0 || event.PlusPrice < 0 {
 		return errors.New("prices cannot be negative")
 	}
 
@@ -164,6 +167,9 @@ func (s *EventService) UpdateEvent(eventID uuid.UUID, updates map[string]interfa
 	if v, ok := updates["bubble_price"].(float64); ok {
 		ev.BubblePrice = v
 	}
+	if v, ok := updates["plus_price"].(float64); ok {
+		ev.PlusPrice = v
+	}
 
 	// Compose new DateFrom/DateTo using possibly updated times
 	df, err := s.composeDateTime(ev.DateFrom, ev.TimeFrom)
@@ -184,10 +190,10 @@ func (s *EventService) UpdateEvent(eventID uuid.UUID, updates map[string]interfa
 	if ev.MaxParticipants <= 0 {
 		return errors.New("max participants must be greater than 0")
 	}
-	if ev.AllowedGroup != "all" && ev.AllowedGroup != "guests" && ev.AllowedGroup != "bubble" {
-		return errors.New("invalid allowed_group; must be 'all', 'guests' or 'bubble'")
+	if ev.AllowedGroup != "all" && ev.AllowedGroup != "guests" && ev.AllowedGroup != "bubble" && ev.AllowedGroup != "plus" {
+		return errors.New("invalid allowed_group; must be 'all', 'guests', 'bubble' or 'plus'")
 	}
-	if ev.GuestsPrice < 0 || ev.BubblePrice < 0 {
+	if ev.GuestsPrice < 0 || ev.BubblePrice < 0 || ev.PlusPrice < 0 {
 		return errors.New("prices cannot be negative")
 	}
 
@@ -202,6 +208,7 @@ func (s *EventService) UpdateEvent(eventID uuid.UUID, updates map[string]interfa
 		"allowed_group":    ev.AllowedGroup,
 		"guests_price":     ev.GuestsPrice,
 		"bubble_price":     ev.BubblePrice,
+		"plus_price":       ev.PlusPrice,
 	}).Error
 }
 

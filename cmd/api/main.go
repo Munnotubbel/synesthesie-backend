@@ -62,6 +62,7 @@ func main() {
 		log.Fatalf("Failed to init S3 service: %v", err)
 	}
 	qrService := services.NewQRService(cfg)
+	backupService := services.NewBackupService(db, cfg, s3Service)
 
 	// Optional: sync missing images on start
 	if cfg.MediaSyncOnStart {
@@ -127,14 +128,19 @@ func main() {
 	// wire asset/storage into userHandler (exported fields)
 	userHandler.AssetService = assetService
 	userHandler.StorageService = storageService
-	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, storageService, s3Service, qrService)
+	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, ticketService, storageService, s3Service, qrService, backupService)
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
+
+	// Health check outside API group (no /api/v1 prefix)
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+	})
 
 	// Setup routes
 	api := router.Group("/api/v1")
 	{
-		// Health check
+		// Health check also available under /api/v1/health for compatibility
 		api.GET("/health", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "healthy"})
 		})
@@ -189,18 +195,22 @@ func main() {
 			admin.POST("/events", adminHandler.CreateEvent)
 			admin.PUT("/events/:id", adminHandler.UpdateEvent)
 			admin.DELETE("/events/:id", adminHandler.DeleteEvent)
+			admin.GET("/events/:id", adminHandler.GetEventDetails)
 			admin.POST("/events/:id/deactivate", adminHandler.DeactivateEvent)
 			admin.POST("/events/:id/refund", adminHandler.RefundEventTickets)
 			admin.GET("/events/:id/drinks.xlsx", adminHandler.ExportEventDrinksXLSX)
+			admin.GET("/events/:id/participants.csv", adminHandler.ExportEventParticipantsCSV)
 
 			// Invite management
 			admin.GET("/invites", adminHandler.GetAllInvites)
+			admin.GET("/invites/stats", adminHandler.GetInviteStats)
 			admin.POST("/invites", adminHandler.CreateInvite)
 			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
 			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
 			admin.GET("/invites/export.csv", adminHandler.ExportInvitesCSV)
 			admin.GET("/invites/export_bubble.csv", adminHandler.ExportInvitesBubbleCSV)
 			admin.GET("/invites/export_guests.csv", adminHandler.ExportInvitesGuestsCSV)
+			admin.GET("/invites/export_plus.csv", adminHandler.ExportInvitesPlusCSV)
 			admin.PUT("/users/:id/group", adminHandler.ReassignUserGroup)
 
 			// User management
@@ -221,6 +231,12 @@ func main() {
 			// Asset upload + sync
 			admin.POST("/assets/upload", adminHandler.UploadAsset)
 			admin.POST("/assets/images/sync-missing", adminHandler.SyncImagesMissing)
+
+			// Backup management
+			admin.GET("/backups", adminHandler.GetAllBackups)
+			admin.GET("/backups/stats", adminHandler.GetBackupStats)
+			admin.POST("/backups/sync", adminHandler.SyncBackupsFromS3)
+			admin.DELETE("/backups/:id", adminHandler.DeleteBackup)
 		}
 
 		// Stripe webhook

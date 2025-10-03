@@ -20,7 +20,8 @@ type Event struct {
 	Price        float64   `gorm:"not null;default:0" json:"price"`
 	GuestsPrice  float64   `gorm:"not null;default:200" json:"guests_price"`
 	BubblePrice  float64   `gorm:"not null;default:35" json:"bubble_price"`
-	AllowedGroup string    `gorm:"type:varchar(16);not null;default:'all'" json:"allowed_group"` // all|guests|bubble
+	PlusPrice    float64   `gorm:"not null;default:50" json:"plus_price"`
+	AllowedGroup string    `gorm:"type:varchar(16);not null;default:'all'" json:"allowed_group"` // all|guests|bubble|plus
 	IsActive     bool      `gorm:"default:true" json:"is_active"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

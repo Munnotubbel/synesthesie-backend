@@ -80,5 +80,6 @@ func Migrate(db *gorm.DB) error {
 		&Asset{},
 		&PhoneVerification{},
 		&PasswordReset{},
+		&Backup{},
 	)
 }

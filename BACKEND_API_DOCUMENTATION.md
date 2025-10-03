@@ -57,6 +57,76 @@ InviteCode Felder (Erweiterung):
 - Systemd-Beispiele: `backup/README.md` (Timer und Service).
 - Retention: 90 Tage per S3 Lifecycle Policy (Prefix `db/`).
 
+#### Admin Backup-Management
+
+##### `GET /api/v1/admin/backups`
+- **Beschreibung:** Ruft eine paginierte Liste aller Backups ab.
+- **Auth:** Admin erforderlich.
+- **Query-Parameter:**
+  - `page` (optional, default: `1`): Seitennummer
+  - `limit` (optional, default: `50`): Anzahl pro Seite
+- **Response (200 OK):**
+  ```json
+  {
+    "backups": [
+      {
+        "id": "uuid",
+        "filename": "synesthesie_2025-10-03T12-00-00Z.sql.gz",
+        "s3_key": "db/synesthesie/2025-10-03T12-00-00Z.sql.gz",
+        "size_bytes": 1234567,
+        "status": "completed", // completed, failed, in_progress
+        "type": "automatic", // automatic, manual
+        "started_at": "time.Time",
+        "completed_at": "time.Time",
+        "error_message": "string (nur bei failed)",
+        "created_at": "time.Time"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 50,
+      "total": 120
+    }
+  }
+  ```
+
+##### `GET /api/v1/admin/backups/stats`
+- **Beschreibung:** Ruft Statistiken über alle Backups ab.
+- **Auth:** Admin erforderlich.
+- **Response (200 OK):**
+  ```json
+  {
+    "total_backups": 120,
+    "completed_backups": 118,
+    "failed_backups": 2,
+    "total_size_bytes": 5678901234,
+    "latest_backup": "time.Time"
+  }
+  ```
+
+##### `POST /api/v1/admin/backups/sync`
+- **Beschreibung:** Synchronisiert Backup-Einträge aus dem S3-Bucket in die Datenbank. Nützlich, um externe Backups (z.B. vom Cron-Job) sichtbar zu machen.
+- **Auth:** Admin erforderlich.
+- **Response (200 OK):**
+  ```json
+  {
+    "message": "Backups synchronized successfully",
+    "synced": 5
+  }
+  ```
+
+##### `DELETE /api/v1/admin/backups/:id`
+- **Beschreibung:** Löscht einen Backup-Eintrag und optional die S3-Datei.
+- **Auth:** Admin erforderlich.
+- **Query-Parameter:**
+  - `delete_from_s3` (optional, boolean): Wenn `true`, wird auch die S3-Datei gelöscht.
+- **Response (200 OK):**
+  ```json
+  {
+    "message": "Backup deleted successfully"
+  }
+  ```
+
 ---
 
 ### Relevante Umgebungsvariablen (Erweiterung)
@@ -130,7 +200,7 @@ InviteCode Felder (Erweiterung):
     "valid": "boolean",
     "code": "string",
     "status": "string", // "new", "viewed", "registered", "inactive"
-    "group": "string",  // "bubble" | "guests"
+    "group": "string",  // "bubble" | "guests" | "plus"
     "message": "string"
   }
   ```
@@ -144,7 +214,7 @@ InviteCode Felder (Erweiterung):
     "valid": true,
     "code": "string",
     "status": "viewed",
-    "group": "string",  // "bubble" | "guests"
+    "group": "string",  // "bubble" | "guests" | "plus"
     "message": "Invite code has been marked as viewed. You can now proceed with registration."
   }
   ```
@@ -189,7 +259,7 @@ InviteCode Felder (Erweiterung):
       "username": "string",
       "email": "string",
       "name": "string",
-      "group": "bubble" | "guests"
+      "group": "bubble" | "guests" | "plus"
     }
   }
   ```
@@ -214,7 +284,7 @@ InviteCode Felder (Erweiterung):
       "email": "string",
       "name": "string",
       "is_admin": "boolean",
-      "group": "bubble" | "guests"
+      "group": "bubble" | "guests" | "plus"
     }
   }
   ```
@@ -290,7 +360,7 @@ Benutzerfelder erweitert:
     "drink1": "string",
     "drink2": "string",
     "drink3": "string",
-    "group": "bubble" | "guests",
+    "group": "bubble" | "guests" | "plus",
     "created_at": "time.Time"
   }
   ```
@@ -321,7 +391,7 @@ Benutzerfelder erweitert:
         "description": "string",
         "date_from": "time.Time",
         "date_to": "time.Time",
-        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0
+        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0, plus=50.0
         "available_spots": "int",
         "has_ticket": "boolean",
         "ticket": { // Nur vorhanden, wenn has_ticket true ist
@@ -430,7 +500,10 @@ Benutzerfelder erweitert:
     "time_from": "string (HH:MM)",
     "time_to": "string (HH:MM)",
     "max_participants": "int",
-    "price": "float64"
+    "allowed_group": "string (optional: 'all'|'guests'|'bubble'|'plus', default: 'all')",
+    "guests_price": "float64 (optional, default: 200.0)",
+    "bubble_price": "float64 (optional, default: 35.0)",
+    "plus_price": "float64 (optional, default: 50.0)"
   }
   ```
 - **Response Body (201 Created):**
@@ -455,7 +528,10 @@ Benutzerfelder erweitert:
     "time_from": "string (HH:MM)",
     "time_to": "string (HH:MM)",
     "max_participants": "int",
-    "price": "float64"
+    "allowed_group": "string ('all'|'guests'|'bubble'|'plus')",
+    "guests_price": "float64",
+    "bubble_price": "float64",
+    "plus_price": "float64"
   }
   ```
 - **Response Body (200 OK):** `{"message": "Event updated successfully"}`
@@ -472,21 +548,85 @@ Benutzerfelder erweitert:
 - **Beschreibung:** Löst die Rückerstattung für alle Tickets eines Events aus.
 - **Response Body (200 OK):** `{"message": "All tickets refunded successfully"}`
 
+##### `GET /admin/events/:id`
+- **Beschreibung:** Ruft detaillierte Informationen zu einem Event ab, inklusive Teilnehmerliste gruppiert nach Benutzergruppen.
+- **Response Body (200 OK):**
+  ```json
+  {
+    "event": {
+      "id": "uuid",
+      "name": "string",
+      "description": "string",
+      "date_from": "time.Time",
+      "date_to": "time.Time",
+      "time_from": "string (HH:MM)",
+      "time_to": "string (HH:MM)",
+      "max_participants": "int",
+      "guests_price": "float64",
+      "bubble_price": "float64",
+      "plus_price": "float64",
+      "allowed_group": "string",
+      "is_active": "boolean",
+      "available_spots": "int",
+      "total_participants": "int",
+      "turnover": "float64",
+      "created_at": "time.Time",
+      "updated_at": "time.Time"
+    },
+    "participants": {
+      "guests": [
+        {
+          "name": "string",
+          "email": "string",
+          "drink1": "string",
+          "drink2": "string",
+          "drink3": "string",
+          "group": "guests"
+        }
+      ],
+      "bubble": [...],
+      "plus": [...]
+    }
+  }
+  ```
+
+##### `GET /admin/events/:id/participants.csv`
+- **Beschreibung:** Exportiert die Teilnehmerliste eines Events als CSV-Datei.
+- **CSV-Spalten:** `Gruppe`, `Name`, `Email`, `Lieblingsgetraenk 1`, `Lieblingsgetraenk 2`, `Lieblingsgetraenk 3`
+- **Sortierung:** Gruppiert nach Benutzergruppe (bubble, guests, plus), innerhalb der Gruppe alphabetisch nach Name sortiert.
+- **Dateiname:** `Teilnehmer_DD-MM-YYYY_EVENTNAME.csv`
+- **Response:**
+  - 200 OK: `text/csv` als Datei-Download (auch wenn keine Teilnehmer, wird eine leere CSV mit Header zurückgegeben).
+
+##### `GET /admin/events/:id/drinks.xlsx`
+- **Beschreibung:** Exportiert eine Statistik der Lieblingsgetränke aller Event-Teilnehmer als Excel-kompatible CSV.
+- **CSV-Spalten:** `Getränk`, `Anzahl`, `Gewählt von` (kommaseparierte Liste der Namen)
+- **Dateiname:** `Getränke_DD-MM-YYYY_EVENTNAME.csv`
+- **Response:**
+  - 200 OK: `text/csv` als Datei-Download mit Häufigkeitsauswertung und Teilnehmerliste.
+  - 200 OK: `{ "status": "no_participants" }`, wenn keine bezahlten Tickets vorhanden sind.
+
 ---
 #### Einladungs-Management
 
 ##### `GET /admin/invites`
 - **Beschreibung:** Ruft alle Einladungscodes ab.
-- **Query-Parameter:** `page`, `limit`, `include_used` (boolean).
+- **Query-Parameter:**
+  - `page` (optional, default: 1): Seitennummer
+  - `limit` (optional, default: 20): Anzahl pro Seite
+  - `include_used` (optional, boolean): Zeigt auch bereits verwendete Codes
+  - `group` (optional): Filtert nach Gruppe (`bubble`, `guests`, `plus`)
+  - `status` (optional): Filtert nach Status (`new`, `viewed`, `registered`, `inactive`)
 - **Response Body (200 OK):**
   ```json
   {
     "invites": [
       {
         "id": "uuid",
+        "public_id": "string",
         "code": "string",
         "status": "string", // "new", "viewed", "registered", "inactive"
-        "group": "string",  // "bubble" | "guests"
+        "group": "string",  // "bubble" | "guests" | "plus"
         "viewed_at": "time.Time",
         "registered_at": "time.Time",
         "created_at": "time.Time",
@@ -501,13 +641,39 @@ Benutzerfelder erweitert:
   }
   ```
 
+##### `GET /admin/invites/stats`
+- **Beschreibung:** Ruft Statistiken über Einladungscodes ab, inklusive Liste aller registrierten User.
+- **Response Body (200 OK):**
+  ```json
+  {
+    "total": 1000,
+    "new": 450,
+    "viewed": 250,
+    "used": 250,
+    "registered": 280,
+    "inactive": 20,
+    "registered_users": [
+      {
+        "id": "uuid",
+        "username": "string",
+        "name": "string",
+        "email": "string",
+        "group": "bubble" | "guests" | "plus",
+        "invite_id": "uuid",
+        "public_id": "string",
+        "created_at": "time.Time"
+      }
+    ]
+  }
+  ```
+
 ##### `POST /admin/invites`
 - **Beschreibung:** Erstellt einen oder mehrere Einladungscodes.
 - **Request Body:**
   ```json
   {
     "count": "int (optional, default: 1)",
-    "group": "string (optional: 'bubble'|'guests'; default: 'guests')"
+    "group": "string (optional: 'bubble'|'guests'|'plus'; default: 'guests')"
   }
   ```
 - **Response Body (201 Created):**
@@ -558,7 +724,18 @@ Benutzerfelder erweitert:
   ```json
   {
     "user": {
-      // Vollständiges Benutzer-Objekt
+      "id": "uuid",
+      "username": "string",
+      "email": "string",
+      "name": "string",
+      "mobile": "string",
+      "drink1": "string",
+      "drink2": "string",
+      "drink3": "string",
+      "group": "bubble" | "guests" | "plus",
+      "is_active": "boolean",
+      "registered_with_code": "string",
+      "created_at": "time.Time"
     },
     "ticket_history": [
       {
@@ -567,6 +744,7 @@ Benutzerfelder erweitert:
         "event_date": "time.Time",
         "status": "string",
         "total_amount": "float64",
+        "includes_pickup": "boolean",
         "created_at": "time.Time"
       }
     ]
@@ -578,7 +756,7 @@ Benutzerfelder erweitert:
 - **Beschreibung:** Weist einem Benutzer eine Gruppe zu oder ändert sie.
 - **Request Body:**
   ```json
-  { "group": "bubble" | "guests" }
+  { "group": "bubble" | "guests" | "plus" }
   ```
 - **Response Body (200 OK):** `{"message": "User group updated successfully", "group": "bubble"}`
 
