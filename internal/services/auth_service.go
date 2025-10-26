@@ -41,11 +41,12 @@ func NewAuthService(db *gorm.DB, redis *redis.Client, cfg *config.Config, sms *S
 func (s *AuthService) AttachEmailService(es *EmailService) { s.email = es }
 
 // Login authenticates a user and returns tokens
+// The username parameter can be either username OR email
 func (s *AuthService) Login(username, password string) (string, string, *models.User, error) {
 	var user models.User
 
-	// Find user by username
-	if err := s.db.Where("username = ?", username).First(&user).Error; err != nil {
+	// Find user by username OR email (robust login)
+	if err := s.db.Where("username = ? OR email = ?", username, username).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", "", nil, errors.New("invalid credentials")
 		}

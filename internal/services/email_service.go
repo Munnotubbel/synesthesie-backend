@@ -40,6 +40,7 @@ func (s *EmailService) loadTemplates() {
 		"event_reminder.html",
 		"cancellation_confirmation.html",
 		"password_reset.html",
+		"event_announcement.html",
 	}
 
 	for _, file := range templateFiles {
@@ -166,6 +167,19 @@ func (s *EmailService) SendEventCancelled(to string, data map[string]interface{}
 func (s *EmailService) SendEventAnnouncement(to string, data map[string]interface{}) error {
 	subject := "Neues Event bei Synesthesie"
 	return s.sendEmail(to, subject, "event_reminder.html", data)
+}
+
+// SendEventAnnouncementToParticipants sends a custom announcement to event participants
+func (s *EmailService) SendEventAnnouncementToParticipants(to, eventName, subject, message string, data map[string]interface{}) error {
+	// If no custom subject provided, use default
+	if subject == "" {
+		subject = fmt.Sprintf("Wichtige Informationen zu %s", eventName)
+	}
+
+	// Ensure message is in data
+	data["Message"] = template.HTML(message)
+
+	return s.sendEmail(to, subject, "event_announcement.html", data)
 }
 
 // sendEmail sends an email using the specified template

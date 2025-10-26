@@ -12,8 +12,9 @@ import (
 )
 
 type AdminService struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db    *gorm.DB
+	cfg   *config.Config
+	email *EmailService
 }
 
 func NewAdminService(db *gorm.DB, cfg *config.Config) *AdminService {
@@ -21,6 +22,19 @@ func NewAdminService(db *gorm.DB, cfg *config.Config) *AdminService {
 }
 
 func (s *AdminService) GetConfig() *config.Config { return s.cfg }
+
+// AttachEmailService attaches the email service (called after initialization)
+func (s *AdminService) AttachEmailService(es *EmailService) {
+	s.email = es
+}
+
+// SendEventAnnouncementEmail sends an event announcement email to a participant
+func (s *AdminService) SendEventAnnouncementEmail(to, eventName, subject, message string, data map[string]interface{}) error {
+	if s.email == nil {
+		return errors.New("email service not attached")
+	}
+	return s.email.SendEventAnnouncementToParticipants(to, eventName, subject, message, data)
+}
 
 // CreateAssetRecord stores an asset metadata record
 func (s *AdminService) CreateAssetRecord(key, filename string, size int64, checksum string, isImage bool) (*models.Asset, error) {

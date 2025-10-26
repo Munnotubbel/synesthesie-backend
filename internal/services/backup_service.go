@@ -133,37 +133,10 @@ func (s *BackupService) GetBackupByID(backupID uuid.UUID) (*models.Backup, error
 	return &backup, nil
 }
 
-// DeleteBackup deletes a backup record and optionally the S3 object
+// DeleteBackup is DISABLED for security reasons
+// Backups are disaster recovery and should only be deleted via S3 lifecycle policies
 func (s *BackupService) DeleteBackup(backupID uuid.UUID, deleteFromS3 bool) error {
-	backup, err := s.GetBackupByID(backupID)
-	if err != nil {
-		return err
-	}
-
-	// Delete from S3 if requested
-	if deleteFromS3 && backup.S3Key != "" {
-		ctx := context.Background()
-		client, err := s.s3Svc.GetBackupClient()
-		if err != nil {
-			return fmt.Errorf("failed to get S3 client: %w", err)
-		}
-
-		input := &s3.DeleteObjectInput{
-			Bucket: aws.String(s.cfg.BackupBucket),
-			Key:    aws.String(backup.S3Key),
-		}
-
-		if _, err := client.DeleteObject(ctx, input); err != nil {
-			return fmt.Errorf("failed to delete from S3: %w", err)
-		}
-	}
-
-	// Delete from database
-	if err := s.db.Delete(&backup).Error; err != nil {
-		return fmt.Errorf("failed to delete backup record: %w", err)
-	}
-
-	return nil
+	return errors.New("deleting backups via API is disabled for security reasons - use S3 lifecycle policies instead")
 }
 
 // CreateManualBackup creates a backup record for a manually triggered backup

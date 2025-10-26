@@ -115,17 +115,14 @@ InviteCode Felder (Erweiterung):
   }
   ```
 
-##### `DELETE /api/v1/admin/backups/:id`
-- **Beschreibung:** Löscht einen Backup-Eintrag und optional die S3-Datei.
-- **Auth:** Admin erforderlich.
-- **Query-Parameter:**
-  - `delete_from_s3` (optional, boolean): Wenn `true`, wird auch die S3-Datei gelöscht.
-- **Response (200 OK):**
-  ```json
-  {
-    "message": "Backup deleted successfully"
-  }
-  ```
+##### ~~`DELETE /api/v1/admin/backups/:id`~~ ❌ DEAKTIVIERT
+**Aus Sicherheitsgründen können Backups NICHT über die API gelöscht werden!**
+
+Backups sind Disaster Recovery und sollten nur über:
+- S3 Lifecycle Policies (automatisch nach 90 Tagen)
+- Direkten S3-Zugriff (wenn unbedingt nötig)
+
+gelöscht werden.
 
 ---
 
@@ -266,10 +263,11 @@ InviteCode Felder (Erweiterung):
 
 #### `POST /auth/login`
 - **Beschreibung:** Meldet einen Benutzer an und liefert Access- und Refresh-Tokens.
+- **Hinweis:** Das Feld `username` akzeptiert sowohl den Benutzernamen als auch die E-Mail-Adresse.
 - **Request Body:**
   ```json
   {
-    "username": "string",
+    "username": "string (Username oder E-Mail-Adresse)",
     "password": "string"
   }
   ```
@@ -547,6 +545,26 @@ Benutzerfelder erweitert:
 ##### `POST /admin/events/:id/refund`
 - **Beschreibung:** Löst die Rückerstattung für alle Tickets eines Events aus.
 - **Response Body (200 OK):** `{"message": "All tickets refunded successfully"}`
+
+##### `POST /admin/events/:id/announce`
+- **Beschreibung:** Sendet eine Ankündigungs-Email an alle Teilnehmer eines Events (nur bezahlte Tickets).
+- **Request Body:**
+  ```json
+  {
+    "subject": "string (optional: Betreff der Email, Standard: 'Wichtige Informationen zu [EVENTNAME]')",
+    "message": "string (required: HTML-Nachricht, die im Email-Template angezeigt wird)"
+  }
+  ```
+- **Response Body (200 OK):**
+  ```json
+  {
+    "message": "Announcement sent to X participants",
+    "sent": 10,
+    "failed": 0,
+    "total_participants": 10
+  }
+  ```
+- **Hinweis:** Die Nachricht wird im `event_announcement.html` Template gerendert und enthält automatisch Event-Details (Name, Datum, Uhrzeit).
 
 ##### `GET /admin/events/:id`
 - **Beschreibung:** Ruft detaillierte Informationen zu einem Event ab, inklusive Teilnehmerliste gruppiert nach Benutzergruppen.

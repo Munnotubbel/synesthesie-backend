@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"fmt"
+	"log"
 	"mime"
 	"net/http"
 	"os"
@@ -443,123 +444,128 @@ func (h *AdminHandler) GetEventDetails(c *gin.Context) {
 
 // ExportEventParticipantsCSV exports event participants as CSV grouped by user group
 func (h *AdminHandler) ExportEventParticipantsCSV(c *gin.Context) {
+	log.Printf("DEBUG: ExportEventParticipantsCSV called for event ID: %s", c.Param("id"))
+
 	eventIDStr := c.Param("id")
 	eventID, err := uuid.Parse(eventIDStr)
 	if err != nil {
+		log.Printf("ERROR: Invalid event ID: %s, error: %v", eventIDStr, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
 		return
 	}
 
-	// Get event
-	event, err := h.eventService.GetEventByID(eventID)
+	// Load event
+	ev, err := h.eventService.GetEventByID(eventID)
 	if err != nil {
+		log.Printf("ERROR: Event not found: %s, error: %v", eventID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
 		return
 	}
+	log.Printf("DEBUG: Event loaded: %s (%s)", ev.Name, ev.ID)
 
-	// Get all tickets for the event
-	tickets, err := h.ticketService.GetEventTickets(eventID)
+	// Load tickets with users for the event (only paid)
+	ts := services.NewTicketService(h.eventService.GetDB(), h.adminService.GetConfig())
+	tickets, err := ts.GetEventTickets(eventID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve tickets"})
+		log.Printf("ERROR: Failed to load tickets: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load event tickets"})
 		return
 	}
+	log.Printf("DEBUG: Loaded %d tickets for event %s", len(tickets), eventID)
 
-	// Group participants by user group
-	type Participant struct {
+	// Collect participants from paid tickets
+	type ParticipantRow struct {
+		Group  string
 		Name   string
 		Email  string
 		Drink1 string
 		Drink2 string
 		Drink3 string
-		Group  string
 	}
 
-	var participants []Participant
-	for _, ticket := range tickets {
-		// Only include paid tickets
-		if ticket.Status != "paid" {
+	rows := make([]ParticipantRow, 0)
+	for _, t := range tickets {
+		if t.Status != "paid" {
+			continue
+		}
+		// Ensure user is loaded
+		if t.User.ID == uuid.Nil {
 			continue
 		}
 
-		// Check if user data is loaded
-		if ticket.UserID == uuid.Nil || ticket.User.ID == uuid.Nil {
-			continue
+		group := t.User.Group
+		if group == "" {
+			group = "guests"
 		}
 
-		p := Participant{
-			Name:   ticket.User.Name,
-			Email:  ticket.User.Email,
-			Drink1: ticket.User.Drink1,
-			Drink2: ticket.User.Drink2,
-			Drink3: ticket.User.Drink3,
-			Group:  ticket.User.Group,
-		}
-		participants = append(participants, p)
+		rows = append(rows, ParticipantRow{
+			Group:  group,
+			Name:   t.User.Name,
+			Email:  t.User.Email,
+			Drink1: t.User.Drink1,
+			Drink2: t.User.Drink2,
+			Drink3: t.User.Drink3,
+		})
 	}
 
-	// Sort by group, then by name (even if empty, we still create the CSV)
-	for i := 0; i < len(participants); i++ {
-		for j := i + 1; j < len(participants); j++ {
-			// First sort by group
-			if participants[i].Group > participants[j].Group {
-				participants[i], participants[j] = participants[j], participants[i]
-			} else if participants[i].Group == participants[j].Group {
-				// Then sort alphabetically by name within same group
-				if strings.ToLower(participants[i].Name) > strings.ToLower(participants[j].Name) {
-					participants[i], participants[j] = participants[j], participants[i]
+	// Sort: first by group, then alphabetically by name
+	for i := 0; i < len(rows); i++ {
+		for j := i + 1; j < len(rows); j++ {
+			if rows[i].Group > rows[j].Group {
+				rows[i], rows[j] = rows[j], rows[i]
+			} else if rows[i].Group == rows[j].Group {
+				if strings.ToLower(rows[i].Name) > strings.ToLower(rows[j].Name) {
+					rows[i], rows[j] = rows[j], rows[i]
 				}
 			}
 		}
 	}
 
-	// Create CSV buffer
+	// Build CSV
 	buf := &bytes.Buffer{}
-	// UTF-8 BOM for Excel compatibility
+	// Prepend UTF-8 BOM for better Excel compatibility
 	_, _ = buf.Write([]byte{0xEF, 0xBB, 0xBF})
 	w := csv.NewWriter(buf)
-
-	// Write separator hint for Excel
+	// Write Excel-compatible separator hint
 	_ = w.Write([]string{"sep=,"})
-
-	// Write header
+	// Header row
 	_ = w.Write([]string{"Gruppe", "Name", "Email", "Lieblingsgetraenk 1", "Lieblingsgetraenk 2", "Lieblingsgetraenk 3"})
 
-	// Write participants
-	for _, p := range participants {
-		groupName := p.Group
-		if groupName == "" {
-			groupName = "guests"
-		}
-		_ = w.Write([]string{
-			groupName,
-			p.Name,
-			p.Email,
-			p.Drink1,
-			p.Drink2,
-			p.Drink3,
-		})
+	// Data rows
+	for _, r := range rows {
+		_ = w.Write([]string{r.Group, r.Name, r.Email, r.Drink1, r.Drink2, r.Drink3})
 	}
 
 	w.Flush()
 	if err := w.Error(); err != nil {
+		log.Printf("ERROR: Failed to generate CSV: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate csv"})
 		return
 	}
 
-	// Create filename with event name and date
-	eventDate := event.DateFrom.Format("02-01-2006")
-	safe := strings.ReplaceAll(event.Name, " ", "_")
-	safe = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
-			return r
+	// Build filename: Teilnehmer_DD-MM-YYYY_EVENTNAME.csv
+	eventDate := ev.DateFrom.Format("02-01-2006")
+	safe := strings.Map(func(r rune) rune {
+		if r == ' ' {
+			return '_'
 		}
-		return '_'
-	}, safe)
+		if r == '/' || r == '\\' {
+			return '-'
+		}
+		return r
+	}, ev.Name)
 	filename := fmt.Sprintf("Teilnehmer_%s_%s.csv", eventDate, safe)
 
+	log.Printf("DEBUG: Generated CSV with %d participants, filename: %s, size: %d bytes", len(rows), filename, buf.Len())
+
+	// Response headers
 	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Header("Content-Length", fmt.Sprintf("%d", buf.Len()))
+
+	// Send CSV data
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
+	log.Printf("DEBUG: CSV response sent successfully for event %s", eventID)
 }
 
 // ExportEventDrinksXLSX exports favorite drinks statistics for event participants as an Excel file
@@ -1607,5 +1613,107 @@ func (h *AdminHandler) DeleteBackup(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Backup deleted successfully",
+	})
+}
+
+// SendEventAnnouncement sends a custom email to all participants of an event
+func (h *AdminHandler) SendEventAnnouncement(c *gin.Context) {
+	eventID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event ID"})
+		return
+	}
+
+	var req struct {
+		Subject string `json:"subject"`                    // Optional: Custom subject line
+		Message string `json:"message" binding:"required"` // Required: HTML message content
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get event details
+	event, err := h.eventService.GetEventByID(eventID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
+		return
+	}
+
+	// Get all paid tickets for this event
+	tickets, err := h.ticketService.GetEventTickets(eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve tickets"})
+		return
+	}
+
+	// Filter only paid tickets
+	var paidTickets []*models.Ticket
+	for _, ticket := range tickets {
+		if ticket.Status == "paid" {
+			paidTickets = append(paidTickets, ticket)
+		}
+	}
+
+	if len(paidTickets) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No participants to notify",
+			"sent":    0,
+		})
+		return
+	}
+
+	// Format event date and time
+	eventDate := event.DateFrom.Format("02.01.2006")
+	if !event.DateTo.IsZero() && event.DateFrom.Format("2006-01-02") != event.DateTo.Format("2006-01-02") {
+		eventDate = fmt.Sprintf("%s - %s", event.DateFrom.Format("02.01.2006"), event.DateTo.Format("02.01.2006"))
+	}
+
+	eventTime := ""
+	if event.TimeFrom != "" {
+		eventTime = event.TimeFrom
+		if event.TimeTo != "" {
+			eventTime = fmt.Sprintf("%s - %s", event.TimeFrom, event.TimeTo)
+		}
+	}
+
+	// Send emails to all participants
+	sentCount := 0
+	failedCount := 0
+
+	for _, ticket := range paidTickets {
+		// Get user details
+		user, err := h.userService.GetUserByID(ticket.UserID)
+		if err != nil {
+			log.Printf("Failed to get user %s: %v", ticket.UserID, err)
+			failedCount++
+			continue
+		}
+
+		// Prepare email data
+		emailData := map[string]interface{}{
+			"Name":      user.Name,
+			"EventName": event.Name,
+			"EventDate": eventDate,
+			"EventTime": eventTime,
+			"Message":   req.Message,
+		}
+
+		// Send email
+		if err := h.adminService.SendEventAnnouncementEmail(user.Email, event.Name, req.Subject, req.Message, emailData); err != nil {
+			log.Printf("Failed to send email to %s: %v", user.Email, err)
+			failedCount++
+			continue
+		}
+
+		sentCount++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":            fmt.Sprintf("Announcement sent to %d participants", sentCount),
+		"sent":               sentCount,
+		"failed":             failedCount,
+		"total_participants": len(paidTickets),
 	})
 }

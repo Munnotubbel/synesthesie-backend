@@ -53,8 +53,9 @@ func main() {
 	ticketService := services.NewTicketService(db, cfg)
 	emailService := services.NewEmailService(cfg)
 	adminService := services.NewAdminService(db, cfg)
-	// Attach email service so AuthService can send emails (e.g., password reset)
+	// Attach email service so AuthService and AdminService can send emails
 	authService.AttachEmailService(emailService)
+	adminService.AttachEmailService(emailService)
 	storageService := services.NewStorageService(cfg)
 	assetService := services.NewAssetService(db, cfg)
 	s3Service, err := services.NewS3Service(cfg)
@@ -195,11 +196,17 @@ func main() {
 			admin.POST("/events", adminHandler.CreateEvent)
 			admin.PUT("/events/:id", adminHandler.UpdateEvent)
 			admin.DELETE("/events/:id", adminHandler.DeleteEvent)
-			admin.GET("/events/:id", adminHandler.GetEventDetails)
+			// Specific routes BEFORE generic :id route to avoid conflicts
+			admin.GET("/events/:id/drinks.xlsx", adminHandler.ExportEventDrinksXLSX)
+			admin.GET("/events/:id/participants.csv", func(c *gin.Context) {
+				log.Printf("DEBUG: Route /events/:id/participants.csv matched for event ID: %s", c.Param("id"))
+				adminHandler.ExportEventParticipantsCSV(c)
+			})
 			admin.POST("/events/:id/deactivate", adminHandler.DeactivateEvent)
 			admin.POST("/events/:id/refund", adminHandler.RefundEventTickets)
-			admin.GET("/events/:id/drinks.xlsx", adminHandler.ExportEventDrinksXLSX)
-			admin.GET("/events/:id/participants.csv", adminHandler.ExportEventParticipantsCSV)
+			admin.POST("/events/:id/announce", adminHandler.SendEventAnnouncement)
+			// Generic :id route last
+			admin.GET("/events/:id", adminHandler.GetEventDetails)
 
 			// Invite management
 			admin.GET("/invites", adminHandler.GetAllInvites)
@@ -232,11 +239,11 @@ func main() {
 			admin.POST("/assets/upload", adminHandler.UploadAsset)
 			admin.POST("/assets/images/sync-missing", adminHandler.SyncImagesMissing)
 
-			// Backup management
+			// Backup management (read-only for monitoring)
 			admin.GET("/backups", adminHandler.GetAllBackups)
 			admin.GET("/backups/stats", adminHandler.GetBackupStats)
 			admin.POST("/backups/sync", adminHandler.SyncBackupsFromS3)
-			admin.DELETE("/backups/:id", adminHandler.DeleteBackup)
+			// DELETE disabled for security - backups are disaster recovery!
 		}
 
 		// Stripe webhook
