@@ -98,7 +98,7 @@ func (s *EventService) CreateEvent(event *models.Event) error {
 
 	// Default prices if unset
 	if event.GuestsPrice <= 0 {
-		event.GuestsPrice = 200
+		event.GuestsPrice = 100
 	}
 	if event.BubblePrice <= 0 {
 		event.BubblePrice = 35

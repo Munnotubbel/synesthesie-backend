@@ -277,6 +277,29 @@ func (s *InviteService) GetInviteByID(inviteID uuid.UUID) (*models.InviteCode, e
 	return &invite, nil
 }
 
+// MarkInviteAsAssigned marks an invite code as assigned (vergeben) when given out by admin
+func (s *InviteService) MarkInviteAsAssigned(inviteID uuid.UUID) (*models.InviteCode, error) {
+	var invite models.InviteCode
+	if err := s.db.First(&invite, inviteID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("invite not found")
+		}
+		return nil, err
+	}
+
+	// Only mark as assigned if status is "new"
+	if invite.Status != models.InviteStatusNew {
+		return nil, errors.New("invite code can only be marked as assigned when status is 'new'")
+	}
+
+	invite.MarkAsAssigned()
+	if err := s.db.Save(&invite).Error; err != nil {
+		return nil, err
+	}
+
+	return &invite, nil
+}
+
 // ViewInviteCode marks an invite code as viewed (first time access)
 func (s *InviteService) ViewInviteCode(code string) (*models.InviteCode, error) {
 	var invite models.InviteCode
@@ -325,10 +348,10 @@ func (s *InviteService) GetAllInvites(offset, limit int, includeUsed bool, group
 	// Status filter takes precedence over includeUsed
 	if status != "" {
 		switch status {
-		case models.InviteStatusNew, models.InviteStatusViewed, models.InviteStatusRegistered, models.InviteStatusInactive:
+		case models.InviteStatusNew, models.InviteStatusAssigned, models.InviteStatusViewed, models.InviteStatusRegistered, models.InviteStatusInactive:
 			query = query.Where("status = ?", status)
 		default:
-			return nil, 0, errors.New("invalid status; must be new|viewed|registered|inactive")
+			return nil, 0, errors.New("invalid status; must be new|assigned|viewed|registered|inactive")
 		}
 	} else if !includeUsed {
 		// Only apply includeUsed filter if no explicit status filter is set
@@ -436,6 +459,13 @@ func (s *InviteService) GetInviteStats() (map[string]interface{}, error) {
 	}
 	stats["new"] = newInvites
 
+	// Assigned invites (vergeben)
+	var assignedInvites int64
+	if err := s.db.Model(&models.InviteCode{}).Where("status = ?", models.InviteStatusAssigned).Count(&assignedInvites).Error; err != nil {
+		return nil, err
+	}
+	stats["assigned"] = assignedInvites
+
 	// Viewed invites (considered "used" in UI context)
 	var viewed int64
 	if err := s.db.Model(&models.InviteCode{}).Where("status = ?", models.InviteStatusViewed).Count(&viewed).Error; err != nil {
@@ -508,5 +538,14 @@ func (s *InviteService) MarkInvitesExported(ids []uuid.UUID) error {
 		return nil
 	}
 	now := time.Now()
-	return s.db.Model(&models.InviteCode{}).Where("id IN ?", ids).Update("exported_at", now).Error
+
+	// First, update exported_at for all
+	if err := s.db.Model(&models.InviteCode{}).Where("id IN ?", ids).Update("exported_at", now).Error; err != nil {
+		return err
+	}
+
+	// Then, set status to "assigned" only for codes that are currently "new"
+	return s.db.Model(&models.InviteCode{}).
+		Where("id IN ? AND status = ?", ids, models.InviteStatusNew).
+		Update("status", models.InviteStatusAssigned).Error
 }

@@ -213,7 +213,7 @@ gelöscht werden.
         "date_to": "time.Time",
         "time_from": "string (Format: HH:MM)",
         "time_to": "string (Format: HH:MM)",
-        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0, plus=50.0
+        "price": "float64", // gruppenabhängig: guests=100.0, bubble=35.0, plus=50.0
         "max_participants": "int",
         "available_spots": "int"
       }
@@ -234,7 +234,7 @@ gelöscht werden.
   {
     "valid": "boolean",
     "code": "string",
-    "status": "string", // "new", "viewed", "registered", "inactive"
+    "status": "string", // "new", "assigned", "viewed", "registered", "inactive"
     "group": "string",  // "bubble" | "guests" | "plus"
     "message": "string"
   }
@@ -415,7 +415,7 @@ gelöscht werden.
         "description": "string",
         "date_from": "time.Time",
         "date_to": "time.Time",
-        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0, plus=50.0
+        "price": "float64", // gruppenabhängig: guests=100.0, bubble=35.0, plus=50.0
         "available_spots": "int",
         "has_ticket": "boolean",
         "ticket": { // Nur vorhanden, wenn has_ticket true ist
@@ -525,7 +525,7 @@ gelöscht werden.
     "time_to": "string (HH:MM)",
     "max_participants": "int",
     "allowed_group": "string (optional: 'all'|'guests'|'bubble'|'plus', default: 'all')",
-    "guests_price": "float64 (optional, default: 200.0)",
+    "guests_price": "float64 (optional, default: 100.0)",
     "bubble_price": "float64 (optional, default: 35.0)",
     "plus_price": "float64 (optional, default: 50.0)"
   }
@@ -660,7 +660,7 @@ gelöscht werden.
   - `limit` (optional, default: 20): Anzahl pro Seite
   - `include_used` (optional, boolean): Zeigt auch bereits verwendete Codes
   - `group` (optional): Filtert nach Gruppe (`bubble`, `guests`, `plus`)
-  - `status` (optional): Filtert nach Status (`new`, `viewed`, `registered`, `inactive`)
+  - `status` (optional): Filtert nach Status (`new`, `assigned`, `viewed`, `registered`, `inactive`)
 - **Response Body (200 OK):**
   ```json
   {
@@ -669,7 +669,7 @@ gelöscht werden.
         "id": "uuid",
         "public_id": "string",
         "code": "string",
-        "status": "string", // "new", "viewed", "registered", "inactive"
+        "status": "string", // "new", "assigned", "viewed", "registered", "inactive"
         "group": "string",  // "bubble" | "guests" | "plus"
         "viewed_at": "time.Time",
         "registered_at": "time.Time",
@@ -692,6 +692,7 @@ gelöscht werden.
   {
     "total": 1000,
     "new": 450,
+    "assigned": 150,
     "viewed": 250,
     "used": 250,
     "registered": 280,
@@ -737,6 +738,24 @@ gelöscht werden.
 ##### `DELETE /admin/invites/:id`
 - **Beschreibung:** Deaktiviert einen Einladungscode.
 - **Response Body (200 OK):** `{"message": "Invite deactivated successfully"}`
+
+##### `POST /admin/invites/:id/assign`
+- **Beschreibung:** Markiert einen Einladungscode als "assigned" (vergeben). Nur möglich, wenn Status "new" ist.
+- **Request Body:** Keiner.
+- **Response Body (200 OK):**
+  ```json
+  {
+    "message": "Invite marked as assigned",
+    "status": "assigned",
+    "code": "string"
+  }
+  ```
+- **Response Body (400 Bad Request):**
+  ```json
+  {
+    "error": "invite code can only be marked as assigned when status is 'new'"
+  }
+  ```
 
 ---
 #### Benutzer-Management
@@ -896,7 +915,8 @@ Der neue Einladungscode-Workflow funktioniert wie folgt:
 
 ### **Status-Übersicht:**
 - `new`: Frisch erstellt, noch nicht aufgerufen
-- `viewed`: Einmal aufgerufen, bereit für Registrierung
+- `assigned`: Vom Admin vergeben (z.B. QR-Code kopiert/heruntergeladen), aber noch nicht vom Benutzer aufgerufen
+- `viewed`: Einmal vom Benutzer aufgerufen, bereit für Registrierung
 - `registered`: Für Registrierung verwendet
 - `inactive`: Vom Admin deaktiviert
 

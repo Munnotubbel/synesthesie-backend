@@ -18,7 +18,7 @@ type Event struct {
 	MaxParticipants int       `gorm:"not null" json:"max_participants"`
 	// Deprecated: Price bleibt für Alt-Clients erhalten, wird aber nicht mehr für Kaufpreis genutzt
 	Price        float64   `gorm:"not null;default:0" json:"price"`
-	GuestsPrice  float64   `gorm:"not null;default:200" json:"guests_price"`
+	GuestsPrice  float64   `gorm:"not null;default:100" json:"guests_price"`
 	BubblePrice  float64   `gorm:"not null;default:35" json:"bubble_price"`
 	PlusPrice    float64   `gorm:"not null;default:50" json:"plus_price"`
 	AllowedGroup string    `gorm:"type:varchar(16);not null;default:'all'" json:"allowed_group"` // all|guests|bubble|plus

@@ -208,12 +208,13 @@ func main() {
 			// Generic :id route last
 			admin.GET("/events/:id", adminHandler.GetEventDetails)
 
-			// Invite management
-			admin.GET("/invites", adminHandler.GetAllInvites)
-			admin.GET("/invites/stats", adminHandler.GetInviteStats)
-			admin.POST("/invites", adminHandler.CreateInvite)
-			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
-			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
+		// Invite management
+		admin.GET("/invites", adminHandler.GetAllInvites)
+		admin.GET("/invites/stats", adminHandler.GetInviteStats)
+		admin.POST("/invites", adminHandler.CreateInvite)
+		admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
+		admin.POST("/invites/:id/assign", adminHandler.AssignInvite)
+		admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
 			admin.GET("/invites/export.csv", adminHandler.ExportInvitesCSV)
 			admin.GET("/invites/export_bubble.csv", adminHandler.ExportInvitesBubbleCSV)
 			admin.GET("/invites/export_guests.csv", adminHandler.ExportInvitesGuestsCSV)

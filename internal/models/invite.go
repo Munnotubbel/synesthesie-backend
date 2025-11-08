@@ -9,6 +9,7 @@ import (
 
 const (
 	InviteStatusNew        = "new"
+	InviteStatusAssigned   = "assigned"
 	InviteStatusViewed     = "viewed"
 	InviteStatusRegistered = "registered"
 	InviteStatusInactive   = "inactive"
@@ -40,6 +41,11 @@ func (i *InviteCode) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// MarkAsAssigned marks the invite code as assigned (vergeben)
+func (i *InviteCode) MarkAsAssigned() {
+	i.Status = InviteStatusAssigned
+}
+
 // MarkAsViewed marks the invite code as viewed
 func (i *InviteCode) MarkAsViewed() {
 	now := time.Now()
@@ -62,7 +68,7 @@ func (i *InviteCode) Deactivate() {
 
 // CanBeViewed checks if the invite code can be viewed
 func (i *InviteCode) CanBeViewed() bool {
-	return i.Status == InviteStatusNew
+	return i.Status == InviteStatusNew || i.Status == InviteStatusAssigned
 }
 
 // CanBeUsedForRegistration checks if the code can be used for registration

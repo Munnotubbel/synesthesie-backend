@@ -112,7 +112,7 @@ func (h *AdminHandler) CreateEvent(c *gin.Context) {
 		TimeTo          string    `json:"time_to" binding:"required"`
 		MaxParticipants int       `json:"max_participants" binding:"required,min=1"`
 		AllowedGroup    string    `json:"allowed_group"` // all|guests|bubble|plus, default all
-		GuestsPrice     float64   `json:"guests_price"`  // default 200
+		GuestsPrice     float64   `json:"guests_price"`  // default 100
 		BubblePrice     float64   `json:"bubble_price"`  // default 35
 		PlusPrice       float64   `json:"plus_price"`    // default 50
 	}
@@ -878,6 +878,28 @@ func (h *AdminHandler) DeactivateInvite(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Invite deactivated successfully"})
+}
+
+// AssignInvite marks an invite code as assigned (vergeben) when given out by admin
+func (h *AdminHandler) AssignInvite(c *gin.Context) {
+	inviteIDStr := c.Param("id")
+	inviteID, err := uuid.Parse(inviteIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid invite ID"})
+		return
+	}
+
+	invite, err := h.inviteService.MarkInviteAsAssigned(inviteID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Invite marked as assigned",
+		"status":  invite.Status,
+		"code":    invite.Code,
+	})
 }
 
 // GetAllUsers retrieves all users
@@ -1678,11 +1700,17 @@ func (h *AdminHandler) SendEventAnnouncement(c *gin.Context) {
 		}
 	}
 
-	// Send emails to all participants
+	// Send emails to all participants with rate limiting
 	sentCount := 0
 	failedCount := 0
 
-	for _, ticket := range paidTickets {
+	// Rate limiting: Max 10 emails per second to avoid spam filters
+	const maxEmailsPerSecond = 10
+	const delayBetweenEmails = time.Second / maxEmailsPerSecond
+
+	log.Printf("Starting to send %d announcement emails for event %s (rate: %d/sec)", len(paidTickets), event.Name, maxEmailsPerSecond)
+
+	for i, ticket := range paidTickets {
 		// Get user details
 		user, err := h.userService.GetUserByID(ticket.UserID)
 		if err != nil {
@@ -1700,15 +1728,37 @@ func (h *AdminHandler) SendEventAnnouncement(c *gin.Context) {
 			"Message":   req.Message,
 		}
 
-		// Send email
-		if err := h.adminService.SendEventAnnouncementEmail(user.Email, event.Name, req.Subject, req.Message, emailData); err != nil {
-			log.Printf("Failed to send email to %s: %v", user.Email, err)
-			failedCount++
-			continue
+		// Send email with retry logic (max 3 attempts)
+		maxRetries := 3
+		var sendErr error
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			sendErr = h.adminService.SendEventAnnouncementEmail(user.Email, event.Name, req.Subject, req.Message, emailData)
+			if sendErr == nil {
+				sentCount++
+				log.Printf("✓ Email sent to %s (%d/%d)", user.Email, i+1, len(paidTickets))
+				break
+			}
+
+			// Retry with exponential backoff
+			if attempt < maxRetries {
+				backoffDelay := time.Duration(attempt) * time.Second
+				log.Printf("⚠️ Failed to send to %s (attempt %d/%d), retrying in %v: %v", user.Email, attempt, maxRetries, backoffDelay, sendErr)
+				time.Sleep(backoffDelay)
+			}
 		}
 
-		sentCount++
+		if sendErr != nil {
+			log.Printf("✗ Failed to send email to %s after %d attempts: %v", user.Email, maxRetries, sendErr)
+			failedCount++
+		}
+
+		// Rate limiting: Wait before sending next email (except for last one)
+		if i < len(paidTickets)-1 {
+			time.Sleep(delayBetweenEmails)
+		}
 	}
+
+	log.Printf("Email sending completed: %d sent, %d failed out of %d total", sentCount, failedCount, len(paidTickets))
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":            fmt.Sprintf("Announcement sent to %d participants", sentCount),

@@ -196,7 +196,7 @@ gelöscht werden.
   {
     "valid": "boolean",
     "code": "string",
-    "status": "string", // "new", "viewed", "registered", "inactive"
+    "status": "string", // "new", "assigned", "viewed", "registered", "inactive"
     "group": "string",  // "bubble" | "guests" | "plus"
     "message": "string"
   }
@@ -389,7 +389,7 @@ Benutzerfelder erweitert:
         "description": "string",
         "date_from": "time.Time",
         "date_to": "time.Time",
-        "price": "float64", // gruppenabhängig: guests=200.0, bubble=35.0, plus=50.0
+        "price": "float64", // gruppenabhängig: guests=100.0, bubble=35.0, plus=50.0
         "available_spots": "int",
         "has_ticket": "boolean",
         "ticket": { // Nur vorhanden, wenn has_ticket true ist
@@ -499,7 +499,7 @@ Benutzerfelder erweitert:
     "time_to": "string (HH:MM)",
     "max_participants": "int",
     "allowed_group": "string (optional: 'all'|'guests'|'bubble'|'plus', default: 'all')",
-    "guests_price": "float64 (optional, default: 200.0)",
+    "guests_price": "float64 (optional, default: 100.0)",
     "bubble_price": "float64 (optional, default: 35.0)",
     "plus_price": "float64 (optional, default: 50.0)"
   }
@@ -634,7 +634,7 @@ Benutzerfelder erweitert:
   - `limit` (optional, default: 20): Anzahl pro Seite
   - `include_used` (optional, boolean): Zeigt auch bereits verwendete Codes
   - `group` (optional): Filtert nach Gruppe (`bubble`, `guests`, `plus`)
-  - `status` (optional): Filtert nach Status (`new`, `viewed`, `registered`, `inactive`)
+  - `status` (optional): Filtert nach Status (`new`, `assigned`, `viewed`, `registered`, `inactive`)
 - **Response Body (200 OK):**
   ```json
   {
@@ -643,7 +643,7 @@ Benutzerfelder erweitert:
         "id": "uuid",
         "public_id": "string",
         "code": "string",
-        "status": "string", // "new", "viewed", "registered", "inactive"
+        "status": "string", // "new", "assigned", "viewed", "registered", "inactive"
         "group": "string",  // "bubble" | "guests" | "plus"
         "viewed_at": "time.Time",
         "registered_at": "time.Time",
