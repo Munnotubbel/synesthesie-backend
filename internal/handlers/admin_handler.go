@@ -29,9 +29,11 @@ type AdminHandler struct {
 	s3Service      *services.S3Service
 	qrService      *services.QRService
 	backupService  *services.BackupService
+	emailService   *services.EmailService
+	auditService   *services.AuditService
 }
 
-func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService, ticketService *services.TicketService, storageService *services.StorageService, s3Service *services.S3Service, qrService *services.QRService, backupService *services.BackupService) *AdminHandler {
+func NewAdminHandler(adminService *services.AdminService, eventService *services.EventService, inviteService *services.InviteService, userService *services.UserService, ticketService *services.TicketService, storageService *services.StorageService, s3Service *services.S3Service, qrService *services.QRService, backupService *services.BackupService, emailService *services.EmailService, auditService *services.AuditService) *AdminHandler {
 	return &AdminHandler{
 		adminService:   adminService,
 		eventService:   eventService,
@@ -42,6 +44,8 @@ func NewAdminHandler(adminService *services.AdminService, eventService *services
 		s3Service:      s3Service,
 		qrService:      qrService,
 		backupService:  backupService,
+		emailService:   emailService,
+		auditService:   auditService,
 	}
 }
 
@@ -1766,4 +1770,139 @@ func (h *AdminHandler) SendEventAnnouncement(c *gin.Context) {
 		"failed":             failedCount,
 		"total_participants": len(paidTickets),
 	})
+}
+
+// sendCancellationEmail sends a cancellation confirmation email with proper data formatting (Admin version)
+func (h *AdminHandler) sendCancellationEmail(ticketID uuid.UUID, cancelledBy string) error {
+	if h.emailService == nil {
+		return nil // Email service not configured
+	}
+
+	ticket, err := h.ticketService.GetTicketByID(ticketID)
+	if err != nil {
+		return err
+	}
+
+	// Format times
+	loc, _ := time.LoadLocation("Europe/Berlin")
+	eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+	cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
+
+	// Calculate refund details
+	refund := ticket.RefundedAmount
+	full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
+	partial := refund > 0 && !full
+
+	data := map[string]interface{}{
+		"UserName":         ticket.User.Name,
+		"EventName":        ticket.Event.Name,
+		"EventDate":        eventDate,
+		"TicketID":         ticket.ID,
+		"CancellationDate": cancelDate,
+		"RefundAmount":     fmt.Sprintf("%.2f", refund),
+		"FullRefund":       full,
+		"PartialRefund":    partial,
+	}
+
+	// Add cancellation source if provided
+	if cancelledBy != "" {
+		data["CancellationBy"] = cancelledBy
+	}
+
+	return h.emailService.SendCancellationConfirmation(ticket.User.Email, data)
+}
+
+// CancelTicket cancels a ticket as admin (no user ownership check)
+func (h *AdminHandler) CancelTicket(c *gin.Context) {
+	// Set audit action for rate limiting middleware
+	c.Set("audit_action", "cancel_ticket")
+
+	ticketIDStr := c.Param("id")
+	ticketID, err := uuid.Parse(ticketIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	// Get admin ID for audit log
+	adminID, _ := c.Get("userID")
+
+	// Optional mode: auto|refund|no_refund
+	mode := strings.TrimSpace(c.DefaultQuery("mode", "auto"))
+	if mode != "auto" && mode != "refund" && mode != "no_refund" {
+		mode = "auto"
+	}
+
+	// Cancel ticket
+	if err := h.ticketService.AdminCancelTicket(ticketID, mode); err != nil {
+		if err.Error() == "refund_not_eligible" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refund_not_eligible"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Log action to audit log
+	if h.auditService != nil {
+		details := map[string]interface{}{
+			"mode":      mode,
+			"ticket_id": ticketID.String(),
+		}
+		_ = h.auditService.LogAction(
+			adminID.(uuid.UUID),
+			"cancel_ticket",
+			"ticket",
+			ticketID,
+			details,
+			c.ClientIP(),
+			c.Request.UserAgent(),
+		)
+	}
+
+	// Send cancellation confirmation email with admin indicator
+	_ = h.sendCancellationEmail(ticketID, "Storniert durch Administrator")
+
+	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully by admin"})
+}
+
+// GetAuditLogs retrieves audit log entries with pagination and filters
+func (h *AdminHandler) GetAuditLogs(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	action := c.Query("action")
+	adminIDStr := c.Query("admin_id")
+
+	var adminID *uuid.UUID
+	if adminIDStr != "" {
+		if parsed, err := uuid.Parse(adminIDStr); err == nil {
+			adminID = &parsed
+		}
+	}
+
+	logs, total, err := h.auditService.GetRecentActions(page, limit, adminID, action)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit logs"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"logs": logs,
+		"pagination": gin.H{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+	})
+}
+
+// GetAuditStats retrieves audit log statistics
+func (h *AdminHandler) GetAuditStats(c *gin.Context) {
+	stats, err := h.auditService.GetStats()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve audit stats"})
+		return
+	}
+
+	c.JSON(http.StatusOK, stats)
 }

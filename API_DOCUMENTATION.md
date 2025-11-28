@@ -842,6 +842,123 @@ gelöscht werden.
   ```
 
 ---
+#### Ticket-Management
+
+##### `POST /admin/tickets/:id/cancel`
+- **Beschreibung:** Storniert ein Ticket als Administrator (ohne Prüfung des Ticket-Besitzes). Identisch zur User-Stornierung, jedoch wird dem Benutzer in der Email mitgeteilt, dass die Stornierung durch einen Administrator erfolgte.
+- **Sicherheit:**
+  - ⚠️ **Rate Limiting:** Max. 10 Stornierungen pro 5 Minuten
+  - 🔒 **Audit Logging:** Jede Aktion wird protokolliert
+  - 📧 **Alert-System:** Bei >5 Stornierungen in 5 Min wird Admin-Email gesendet
+  - 🚫 **Auto-Block:** Bei >5 Stornierungen in 5 Min wird Account für **1 Stunde blockiert**
+- **Query-Parameter:**
+  - `mode` (optional, default: `auto`): Stornierungsmodus
+    - `auto`: Automatische Refund-Prüfung basierend auf Policy (Standard)
+    - `refund`: Explizit mit Refund (schlägt fehl, wenn nicht berechtigt)
+    - `no_refund`: Stornierung ohne Refund
+- **Request Body:** Keiner.
+- **Verhalten:**
+  - Bei `pending` Status: Ticket wird gelöscht
+  - Bei `paid` Status:
+    - Prüft Refund-Berechtigung (Tage bis Event)
+    - Führt ggf. Stripe-Refund durch
+    - Setzt Status auf `cancelled`
+    - Sendet Bestätigungs-Email mit Hinweis "Storniert durch Administrator"
+    - Loggt Aktion im Audit Log
+- **Response Body (200 OK):**
+  ```json
+  {
+    "message": "Ticket cancelled successfully by admin"
+  }
+  ```
+- **Response Body (429 Too Many Requests):**
+  ```json
+  {
+    "error": "rate_limit_exceeded",
+    "message": "Too many actions in a short time. Please wait a few minutes.",
+    "retry_after_minutes": 5,
+    "warning": "Further attempts will result in a 1-hour block."
+  }
+  ```
+- **Response Body (403 Forbidden - Nach >5 Stornierungen):**
+  ```json
+  {
+    "error": "admin_temporarily_blocked",
+    "message": "Too many actions detected. Your account has been temporarily blocked for 1 hour. If this was not you, please contact the system administrator immediately.",
+    "blocked_for_minutes": 60
+  }
+  ```
+- **Response Body (400 Bad Request):**
+  ```json
+  {
+    "error": "refund_not_eligible"
+  }
+  ```
+  oder
+  ```json
+  {
+    "error": "ticket not found"
+  }
+  ```
+
+---
+#### Audit Log (Admin-Sicherheit)
+
+##### `GET /admin/audit/logs`
+- **Beschreibung:** Ruft Audit-Log-Einträge ab (alle Admin-Aktionen werden protokolliert).
+- **Query-Parameter:**
+  - `page` (optional, default: 1): Seitennummer
+  - `limit` (optional, default: 50): Anzahl pro Seite
+  - `action` (optional): Filter nach Aktionstyp (z.B. `cancel_ticket`)
+  - `admin_id` (optional, UUID): Filter nach Admin-Benutzer
+- **Response Body (200 OK):**
+  ```json
+  {
+    "logs": [
+      {
+        "id": "uuid",
+        "admin_id": "uuid",
+        "admin": {
+          "id": "uuid",
+          "username": "string",
+          "name": "string",
+          "email": "string"
+        },
+        "action": "cancel_ticket",
+        "target_type": "ticket",
+        "target_id": "uuid",
+        "details": "{\"mode\":\"auto\",\"ticket_id\":\"...\"}",
+        "ip_address": "192.168.1.1",
+        "user_agent": "Mozilla/5.0...",
+        "created_at": "time.Time"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 50,
+      "total": 150
+    }
+  }
+  ```
+
+##### `GET /admin/audit/stats`
+- **Beschreibung:** Ruft Statistiken über Admin-Aktionen ab.
+- **Response Body (200 OK):**
+  ```json
+  {
+    "total_actions": 1500,
+    "actions_by_type": [
+      {"action": "cancel_ticket", "count": 450},
+      {"action": "create_invite", "count": 300}
+    ],
+    "most_active_admins_30d": [
+      {"admin_id": "uuid", "count": 120}
+    ],
+    "actions_last_24h": 45
+  }
+  ```
+
+---
 
 ### **Preis-Management (Admin)**
 

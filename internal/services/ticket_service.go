@@ -253,6 +253,83 @@ func (s *TicketService) CancelTicket(ticketID, userID uuid.UUID) error {
 	return s.CancelTicketWithMode(ticketID, userID, "auto")
 }
 
+// AdminCancelTicket cancels a ticket by admin without user ownership check
+func (s *TicketService) AdminCancelTicket(ticketID uuid.UUID, mode string) error {
+	var ticket models.Ticket
+
+	// Get ticket without user ownership check
+	if err := s.db.Preload("Event").Where("id = ?", ticketID).First(&ticket).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("ticket not found")
+		}
+		return err
+	}
+
+	switch ticket.Status {
+	case "pending":
+		// Delete pending ticket
+		if err := s.db.Delete(&ticket).Error; err != nil {
+			return fmt.Errorf("failed to delete pending ticket: %w", err)
+		}
+		return nil
+
+	case "paid":
+		// Admin cancellation: always allow, refund handling based on mode
+		days := 14
+		percent := 50
+		policyEnabled := false
+		if s.cfg != nil {
+			policyEnabled = s.cfg.TicketCancellationEnabled
+			if s.cfg.TicketCancellationDays > 0 {
+				days = s.cfg.TicketCancellationDays
+			}
+			if s.cfg.TicketCancellationRefundPercent > 0 {
+				percent = s.cfg.TicketCancellationRefundPercent
+			}
+		}
+
+		refundAmount := 0.0
+		if policyEnabled && mode != "no_refund" {
+			// Check eligibility window
+			daysUntilEvent := time.Until(ticket.Event.DateFrom).Hours() / 24
+			if int(daysUntilEvent) >= days {
+				refundAmount = ticket.TotalAmount * float64(percent) / 100.0
+				// Process Stripe refund if amount > 0 and PaymentIntent exists
+				if refundAmount > 0 && ticket.StripePaymentIntentID != "" {
+					if _, err := refund.New(&stripe.RefundParams{
+						PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
+						Amount:        stripe.Int64(int64(refundAmount * 100)),
+					}); err != nil {
+						return fmt.Errorf("failed to process refund: %w", err)
+					}
+				}
+			} else if mode == "refund" {
+				// Requested refund but not eligible
+				return errors.New("refund_not_eligible")
+			}
+		}
+
+		// Always cancel ticket; only set refund fields if > 0
+		now := time.Now()
+		updates := map[string]interface{}{
+			"status":       "cancelled",
+			"cancelled_at": now,
+		}
+		if refundAmount > 0 {
+			updates["refunded_amount"] = refundAmount
+			updates["refunded_at"] = now
+		}
+
+		if err := s.db.Model(&ticket).Updates(updates).Error; err != nil {
+			return err
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("ticket cannot be cancelled with current status: %s", ticket.Status)
+	}
+}
+
 // CancelTicketWithMode cancels a ticket with an explicit mode:
 // mode = 'auto' (default policy), 'refund' (require refund eligibility), 'no_refund' (force cancel without refund)
 func (s *TicketService) CancelTicketWithMode(ticketID, userID uuid.UUID, mode string) error {

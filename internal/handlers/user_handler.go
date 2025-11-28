@@ -308,6 +308,46 @@ func (h *UserHandler) BookTicket(c *gin.Context) {
 	})
 }
 
+// sendCancellationEmail sends a cancellation confirmation email with proper data formatting
+func (h *UserHandler) sendCancellationEmail(ticketID uuid.UUID, cancelledBy string) error {
+	if h.EmailService == nil {
+		return nil // Email service not configured
+	}
+
+	ticket, err := h.ticketService.GetTicketByID(ticketID)
+	if err != nil {
+		return err
+	}
+
+	// Format times
+	loc, _ := time.LoadLocation("Europe/Berlin")
+	eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
+	cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
+	
+	// Calculate refund details
+	refund := ticket.RefundedAmount
+	full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
+	partial := refund > 0 && !full
+
+	data := map[string]interface{}{
+		"UserName":         ticket.User.Name,
+		"EventName":        ticket.Event.Name,
+		"EventDate":        eventDate,
+		"TicketID":         ticket.ID,
+		"CancellationDate": cancelDate,
+		"RefundAmount":     fmt.Sprintf("%.2f", refund),
+		"FullRefund":       full,
+		"PartialRefund":    partial,
+	}
+
+	// Add cancellation source if provided
+	if cancelledBy != "" {
+		data["CancellationBy"] = cancelledBy
+	}
+
+	return h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
+}
+
 // CancelTicket cancels a user's ticket
 func (h *UserHandler) CancelTicket(c *gin.Context) {
 	userID, _ := c.Get("userID")
@@ -334,29 +374,8 @@ func (h *UserHandler) CancelTicket(c *gin.Context) {
 		return
 	}
 
-	// E-Mail Stornobestätigung senden (mit ggf. Refund-Info)
-	if h.EmailService != nil {
-		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
-			// Zeiten formatieren
-			loc, _ := time.LoadLocation("Europe/Berlin")
-			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
-			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
-			refund := ticket.RefundedAmount
-			full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
-			partial := refund > 0 && !full
-			data := map[string]interface{}{
-				"UserName":         ticket.User.Name,
-				"EventName":        ticket.Event.Name,
-				"EventDate":        eventDate,
-				"TicketID":         ticket.ID,
-				"CancellationDate": cancelDate,
-				"RefundAmount":     fmt.Sprintf("%.2f", refund),
-				"FullRefund":       full,
-				"PartialRefund":    partial,
-			}
-			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
-		}
-	}
+	// Send cancellation confirmation email
+	_ = h.sendCancellationEmail(ticketID, "")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
 }
@@ -381,27 +400,8 @@ func (h *UserHandler) CancelTicketRefund(c *gin.Context) {
 		return
 	}
 
-	if h.EmailService != nil {
-		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
-			loc, _ := time.LoadLocation("Europe/Berlin")
-			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
-			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
-			refund := ticket.RefundedAmount
-			full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
-			partial := refund > 0 && !full
-			data := map[string]interface{}{
-				"UserName":         ticket.User.Name,
-				"EventName":        ticket.Event.Name,
-				"EventDate":        eventDate,
-				"TicketID":         ticket.ID,
-				"CancellationDate": cancelDate,
-				"RefundAmount":     fmt.Sprintf("%.2f", refund),
-				"FullRefund":       full,
-				"PartialRefund":    partial,
-			}
-			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
-		}
-	}
+	// Send cancellation confirmation email
+	_ = h.sendCancellationEmail(ticketID, "")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
 }
@@ -422,25 +422,8 @@ func (h *UserHandler) CancelTicketNoRefund(c *gin.Context) {
 		return
 	}
 
-	if h.EmailService != nil {
-		if ticket, err := h.ticketService.GetTicketByID(ticketID); err == nil {
-			loc, _ := time.LoadLocation("Europe/Berlin")
-			eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
-			cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
-			refund := ticket.RefundedAmount // erwartungsgemäß 0
-			data := map[string]interface{}{
-				"UserName":         ticket.User.Name,
-				"EventName":        ticket.Event.Name,
-				"EventDate":        eventDate,
-				"TicketID":         ticket.ID,
-				"CancellationDate": cancelDate,
-				"RefundAmount":     fmt.Sprintf("%.2f", refund),
-				"FullRefund":       false,
-				"PartialRefund":    false,
-			}
-			_ = h.EmailService.SendCancellationConfirmation(ticket.User.Email, data)
-		}
-	}
+	// Send cancellation confirmation email
+	_ = h.sendCancellationEmail(ticketID, "")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
 }

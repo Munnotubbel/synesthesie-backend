@@ -119,6 +119,11 @@ type Config struct {
 	// Ticket pending cleanup
 	PendingTicketTTLMinutes     int
 	PendingTicketCleanupEnabled bool
+
+	// Admin security & audit
+	AdminAlertEmail              string // Email for security alerts
+	AdminRateLimitActions        int    // Max actions per time window
+	AdminRateLimitWindowMinutes  int    // Time window in minutes
 }
 
 func New() *Config {
@@ -234,6 +239,11 @@ func New() *Config {
 		// Ticket pending cleanup
 		PendingTicketTTLMinutes:     getEnvAsInt("PENDING_TICKET_TTL_MINUTES", 30),
 		PendingTicketCleanupEnabled: getEnv("PENDING_TICKET_CLEANUP_ENABLED", "true") == "true",
+
+		// Admin security & audit
+		AdminAlertEmail:             getEnv("ADMIN_ALERT_EMAIL", getEnv("ADMIN_EMAIL", "admin@synesthesie.de")),
+		AdminRateLimitActions:       getEnvAsInt("ADMIN_RATE_LIMIT_ACTIONS", 10),
+		AdminRateLimitWindowMinutes: getEnvAsInt("ADMIN_RATE_LIMIT_WINDOW_MINUTES", 5),
 	}
 }
 

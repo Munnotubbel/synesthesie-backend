@@ -64,6 +64,7 @@ func main() {
 	}
 	qrService := services.NewQRService(cfg)
 	backupService := services.NewBackupService(db, cfg, s3Service)
+	auditService := services.NewAuditService(db, emailService, cfg)
 
 	// Optional: sync missing images on start
 	if cfg.MediaSyncOnStart {
@@ -129,7 +130,7 @@ func main() {
 	// wire asset/storage into userHandler (exported fields)
 	userHandler.AssetService = assetService
 	userHandler.StorageService = storageService
-	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, ticketService, storageService, s3Service, qrService, backupService)
+	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, ticketService, storageService, s3Service, qrService, backupService, emailService, auditService)
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
 
@@ -228,6 +229,17 @@ func main() {
 				admin.PUT("/users/:id/password", adminHandler.ResetUserPassword)
 			}
 			admin.PUT("/users/:id/active", adminHandler.UpdateUserActive)
+
+			// Ticket management (with rate limiting and 1-hour block after 5 attempts)
+			ticketCancelGroup := admin.Group("/tickets")
+			ticketCancelGroup.Use(middleware.AdminActionRateLimit(auditService, redisClient, cfg.AdminRateLimitActions, cfg.AdminRateLimitWindowMinutes))
+			{
+				ticketCancelGroup.POST("/:id/cancel", adminHandler.CancelTicket)
+			}
+
+			// Audit log management
+			admin.GET("/audit/logs", adminHandler.GetAuditLogs)
+			admin.GET("/audit/stats", adminHandler.GetAuditStats)
 
 			// Service price management
 			admin.GET("/settings/pickup-price", adminHandler.GetPickupServicePrice)
