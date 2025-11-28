@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,15 +16,34 @@ import (
 )
 
 type TicketService struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db              *gorm.DB
+	cfg             *config.Config
+	stripeProvider  PaymentProvider
+	paypalProvider  PaymentProvider
 }
 
 func NewTicketService(db *gorm.DB, cfg *config.Config) *TicketService {
 	if cfg != nil {
 		stripe.Key = cfg.StripeSecretKey
 	}
-	return &TicketService{db: db, cfg: cfg}
+
+	service := &TicketService{
+		db:  db,
+		cfg: cfg,
+	}
+
+	// Initialize Stripe provider (always available)
+	service.stripeProvider = NewStripeProvider(cfg, db)
+
+	// Initialize PayPal provider (if enabled)
+	if cfg != nil && cfg.PayPalEnabled && cfg.PayPalClientID != "" {
+		paypalProvider, err := NewPayPalProvider(cfg, db)
+		if err == nil {
+			service.paypalProvider = paypalProvider
+		}
+	}
+
+	return service
 }
 
 // ListPickupTickets returns tickets that include pickup service.
@@ -204,7 +224,9 @@ func (s *TicketService) createStripeCheckoutSession(ticket *models.Ticket, event
 }
 
 // ConfirmPayment confirms a ticket payment after successful Stripe webhook
+// Also handles Grace Period: reactivates tickets in "pending_cancellation" status
 func (s *TicketService) ConfirmPayment(ticketID uuid.UUID, paymentIntentID string) error {
+	// First try normal pending tickets
 	result := s.db.Model(&models.Ticket{}).
 		Where("id = ? AND status = ?", ticketID, "pending").
 		Updates(map[string]interface{}{
@@ -216,11 +238,30 @@ func (s *TicketService) ConfirmPayment(ticketID uuid.UUID, paymentIntentID strin
 		return result.Error
 	}
 
-	if result.RowsAffected == 0 {
-		return errors.New("ticket not found or already paid")
+	if result.RowsAffected > 0 {
+		return nil // Success - normal flow
 	}
 
-	return nil
+	// No rows affected - check if ticket is in pending_cancellation (GRACE PERIOD)
+	result = s.db.Model(&models.Ticket{}).
+		Where("id = ? AND status = ?", ticketID, "pending_cancellation").
+		Updates(map[string]interface{}{
+			"status":                   "paid",
+			"stripe_payment_intent_id": paymentIntentID,
+			"cancelled_at":             nil, // Clear cancellation timestamp
+		})
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected > 0 {
+		log.Printf("✅ Stripe webhook: Ticket %s reactivated from pending_cancellation to paid (GRACE PERIOD)", ticketID)
+		return nil
+	}
+
+	// Ticket not found in pending or pending_cancellation
+	return errors.New("ticket not found or already paid")
 }
 
 // CancelPendingBySystem cancels a pending ticket (e.g., after Stripe session expiration)
@@ -230,6 +271,57 @@ func (s *TicketService) CancelPendingBySystem(ticketID uuid.UUID, reason string)
 		"cancelled_at": time.Now(),
 	}
 	return s.db.Model(&models.Ticket{}).Where("id = ? AND status = ?", ticketID, "pending").Updates(updates).Error
+}
+
+// RetryPendingCheckout generates a new checkout URL for a pending ticket
+func (s *TicketService) RetryPendingCheckout(ticketID, userID uuid.UUID) (string, string, error) {
+	var ticket models.Ticket
+
+	// Get ticket with event and user
+	if err := s.db.Preload("Event").Preload("User").
+		Where("id = ? AND user_id = ?", ticketID, userID).
+		First(&ticket).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", errors.New("ticket not found")
+		}
+		return "", "", err
+	}
+
+	// Only allow retry for pending tickets
+	if ticket.Status != "pending" {
+		return "", "", fmt.Errorf("ticket is not pending (status: %s)", ticket.Status)
+	}
+
+	// Determine payment provider
+	paymentProvider := ticket.PaymentProvider
+	if paymentProvider == "" {
+		paymentProvider = "stripe" // Default fallback
+	}
+
+	var checkoutURL string
+	var err error
+
+	// Generate new checkout URL based on provider
+	switch paymentProvider {
+	case "stripe":
+		if s.stripeProvider == nil {
+			return "", "", errors.New("Stripe provider not available")
+		}
+		checkoutURL, err = s.stripeProvider.CreateCheckout(&ticket, &ticket.Event, &ticket.User, ticket.TotalAmount)
+	case "paypal":
+		if s.paypalProvider == nil {
+			return "", "", errors.New("PayPal is not enabled")
+		}
+		checkoutURL, err = s.paypalProvider.CreateCheckout(&ticket, &ticket.Event, &ticket.User, ticket.TotalAmount)
+	default:
+		return "", "", fmt.Errorf("unsupported payment provider: %s", paymentProvider)
+	}
+
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create checkout: %w", err)
+	}
+
+	return checkoutURL, paymentProvider, nil
 }
 
 // CleanupStalePending cancels tickets that stayed pending longer than the configured TTL
@@ -245,6 +337,267 @@ func (s *TicketService) CleanupStalePending() (int64, error) {
 			"cancelled_at": time.Now(),
 		})
 	return res.RowsAffected, res.Error
+}
+
+// CleanupPendingCancellations finalizes tickets in "pending_cancellation" after grace period
+// Grace period: 5 minutes to allow PayPal/Stripe payments to complete
+func (s *TicketService) CleanupPendingCancellations() (int64, error) {
+	gracePeriodMinutes := 5 // 5 minutes grace period
+	cutoff := time.Now().Add(-time.Duration(gracePeriodMinutes) * time.Minute)
+
+	res := s.db.Model(&models.Ticket{}).
+		Where("status = ? AND cancelled_at < ?", "pending_cancellation", cutoff).
+		Update("status", "cancelled")
+
+	if res.RowsAffected > 0 {
+		log.Printf("CleanupPendingCancellations: Finalized %d cancelled tickets after grace period", res.RowsAffected)
+	}
+
+	return res.RowsAffected, res.Error
+}
+
+// CheckPendingCancellations actively polls payment status for tickets in pending_cancellation
+// This ensures payments are captured even if webhooks fail (Grace Period active polling)
+func (s *TicketService) CheckPendingCancellations() (int64, error) {
+	var tickets []models.Ticket
+
+	// Get all tickets in pending_cancellation that are less than 5 minutes old
+	gracePeriodMinutes := 5
+	cutoff := time.Now().Add(-time.Duration(gracePeriodMinutes) * time.Minute)
+
+	err := s.db.Where("status = ? AND cancelled_at > ?", "pending_cancellation", cutoff).
+		Find(&tickets).Error
+
+	if err != nil {
+		return 0, err
+	}
+
+	if len(tickets) == 0 {
+		return 0, nil
+	}
+
+	log.Printf("🔍 CheckPendingCancellations: Checking %d tickets in grace period", len(tickets))
+
+	var reactivated int64
+
+	for _, ticket := range tickets {
+		// Check payment status based on provider
+		switch ticket.PaymentProvider {
+		case "stripe":
+			if ticket.StripeSessionID != "" {
+				if s.checkStripePaymentStatus(&ticket) {
+					reactivated++
+				}
+			}
+		case "paypal":
+			if ticket.PayPalOrderID != "" {
+				if s.checkPayPalPaymentStatus(&ticket) {
+					reactivated++
+				}
+			}
+		}
+	}
+
+	if reactivated > 0 {
+		log.Printf("✅ CheckPendingCancellations: Reactivated %d tickets after finding completed payments", reactivated)
+	}
+
+	return reactivated, nil
+}
+
+// FastCheckRecentPending checks very recent pending tickets frequently (0-30 seconds old)
+// This provides fast feedback for users actively waiting at checkout
+func (s *TicketService) FastCheckRecentPending() (int64, error) {
+	var tickets []models.Ticket
+
+	// Get pending tickets less than 30 seconds old
+	cutoff := time.Now().Add(-30 * time.Second)
+
+	err := s.db.Where("status = ? AND created_at > ?", "pending", cutoff).
+		Find(&tickets).Error
+
+	if err != nil {
+		return 0, err
+	}
+
+	if len(tickets) == 0 {
+		return 0, nil
+	}
+
+	log.Printf("🔍 Fast-poll: Checking %d recent pending tickets", len(tickets))
+
+	var confirmed int64
+
+	for _, ticket := range tickets {
+		switch ticket.PaymentProvider {
+		case "stripe":
+			if ticket.StripeSessionID != "" {
+				if s.checkStripePaymentStatus(&ticket) {
+					confirmed++
+				}
+			}
+		case "paypal":
+			if ticket.PayPalOrderID != "" {
+				if s.checkPayPalPaymentStatus(&ticket) {
+					confirmed++
+				}
+			}
+		}
+	}
+
+	if confirmed > 0 {
+		log.Printf("✅ Fast-poll: Confirmed %d payments", confirmed)
+	}
+
+	return confirmed, nil
+}
+
+// CheckPendingPayments actively polls payment status for pending tickets (30 sec - 30 min old)
+// Uses exponential backoff to reduce API calls over time
+func (s *TicketService) CheckPendingPayments() (int64, error) {
+	var tickets []models.Ticket
+
+	// Get all pending tickets between 30 seconds and 30 minutes old
+	maxAge := 30 * time.Minute
+	minAge := 30 * time.Second
+	cutoffMax := time.Now().Add(-maxAge)
+	cutoffMin := time.Now().Add(-minAge)
+
+	err := s.db.Where("status = ? AND created_at > ? AND created_at < ?", "pending", cutoffMax, cutoffMin).
+		Find(&tickets).Error
+
+	if err != nil {
+		return 0, err
+	}
+
+	if len(tickets) == 0 {
+		return 0, nil
+	}
+
+	var confirmed int64
+
+	for _, ticket := range tickets {
+		// Check payment status based on provider
+		switch ticket.PaymentProvider {
+		case "stripe":
+			if ticket.StripeSessionID != "" {
+				if s.checkStripePaymentStatus(&ticket) {
+					confirmed++
+				}
+			}
+		case "paypal":
+			if ticket.PayPalOrderID != "" {
+				if s.checkPayPalPaymentStatus(&ticket) {
+					confirmed++
+				}
+			}
+		}
+	}
+
+	if confirmed > 0 {
+		log.Printf("✅ Pending payment check: Confirmed %d payments via active polling", confirmed)
+	}
+
+	return confirmed, nil
+}
+
+// checkStripePaymentStatus checks if a Stripe payment was completed
+func (s *TicketService) checkStripePaymentStatus(ticket *models.Ticket) bool {
+	// Get Stripe session
+	sess, err := session.Get(ticket.StripeSessionID, nil)
+	if err != nil {
+		log.Printf("⚠️ Payment check: Failed to get Stripe session for ticket %s: %v", ticket.ID, err)
+		return false
+	}
+
+	// Check if payment was completed
+	if sess.PaymentStatus == "paid" {
+		log.Printf("✅ Payment check: Found completed Stripe payment for ticket %s", ticket.ID)
+
+		// Get payment intent ID
+		paymentIntentID := ""
+		if sess.PaymentIntent != nil {
+			paymentIntentID = sess.PaymentIntent.ID
+		}
+
+		// Update ticket to paid
+		updates := map[string]interface{}{
+			"status":                   "paid",
+			"cancelled_at":             nil,
+			"stripe_payment_intent_id": paymentIntentID,
+		}
+
+		if err := s.db.Model(&models.Ticket{}).Where("id = ?", ticket.ID).Updates(updates).Error; err != nil {
+			log.Printf("⚠️ Payment check: Failed to update Stripe ticket %s: %v", ticket.ID, err)
+			return false
+		}
+
+		log.Printf("✅ Payment check: Stripe ticket %s confirmed as paid", ticket.ID)
+		return true
+	}
+
+	return false
+}
+
+// checkPayPalPaymentStatus checks if a PayPal payment was completed
+func (s *TicketService) checkPayPalPaymentStatus(ticket *models.Ticket) bool {
+	if s.paypalProvider == nil {
+		return false
+	}
+
+	// Use the PayPal provider to check and capture order
+	return s.paypalProvider.CheckAndCaptureOrder(ticket)
+}
+
+// ProactiveConfirmPayment proactively confirms a payment when user returns from payment provider
+// This provides instant confirmation without waiting for webhooks (like Shopify, Airbnb)
+func (s *TicketService) ProactiveConfirmPayment(ticketID, userID uuid.UUID, paypalToken, paypalPayerID, stripeSessionID string) (bool, string, error) {
+	var ticket models.Ticket
+
+	// Get ticket with ownership check
+	if err := s.db.Where("id = ? AND user_id = ?", ticketID, userID).First(&ticket).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, "", errors.New("ticket not found")
+		}
+		return false, "", err
+	}
+
+	// Only confirm pending or pending_cancellation tickets
+	if ticket.Status != "pending" && ticket.Status != "pending_cancellation" {
+		// Already paid or cancelled
+		return false, ticket.Status, nil
+	}
+
+	log.Printf("🔍 Proactive confirm: Checking payment for ticket %s (status: %s)", ticketID, ticket.Status)
+
+	// Check based on payment provider
+	switch ticket.PaymentProvider {
+	case "paypal":
+		if paypalToken != "" && s.paypalProvider != nil {
+			// Proactively check PayPal order status
+			if s.paypalProvider.CheckAndCaptureOrder(&ticket) {
+				// Reload ticket to get updated status
+				s.db.First(&ticket, ticketID)
+				log.Printf("✅ Proactive confirm: PayPal payment confirmed for ticket %s (was: %s, now: %s)", ticketID, ticket.Status, "paid")
+				return true, "paid", nil
+			}
+		}
+
+	case "stripe":
+		if stripeSessionID != "" {
+			// Proactively check Stripe session status
+			if s.checkStripePaymentStatus(&ticket) {
+				// Reload ticket to get updated status
+				s.db.First(&ticket, ticketID)
+				log.Printf("✅ Proactive confirm: Stripe payment confirmed for ticket %s", ticketID)
+				return true, "paid", nil
+			}
+		}
+	}
+
+	// Payment not yet confirmed
+	log.Printf("⏱️ Proactive confirm: Payment not yet confirmed for ticket %s, will retry via polling", ticketID)
+	return false, ticket.Status, nil
 }
 
 // CancelTicket cancels a paid ticket and processes a refund, or deletes a pending ticket.
@@ -294,13 +647,22 @@ func (s *TicketService) AdminCancelTicket(ticketID uuid.UUID, mode string) error
 			daysUntilEvent := time.Until(ticket.Event.DateFrom).Hours() / 24
 			if int(daysUntilEvent) >= days {
 				refundAmount = ticket.TotalAmount * float64(percent) / 100.0
-				// Process Stripe refund if amount > 0 and PaymentIntent exists
-				if refundAmount > 0 && ticket.StripePaymentIntentID != "" {
-					if _, err := refund.New(&stripe.RefundParams{
-						PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
-						Amount:        stripe.Int64(int64(refundAmount * 100)),
-					}); err != nil {
-						return fmt.Errorf("failed to process refund: %w", err)
+
+				// Process refund based on payment provider
+				if refundAmount > 0 {
+					if ticket.PaymentProvider == "paypal" && s.paypalProvider != nil && ticket.PayPalCaptureID != "" {
+						// PayPal refund
+						if err := s.paypalProvider.ProcessRefund(&ticket, refundAmount); err != nil {
+							return fmt.Errorf("failed to process PayPal refund: %w", err)
+						}
+					} else if ticket.StripePaymentIntentID != "" {
+						// Stripe refund (default)
+						if _, err := refund.New(&stripe.RefundParams{
+							PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
+							Amount:        stripe.Int64(int64(refundAmount * 100)),
+						}); err != nil {
+							return fmt.Errorf("failed to process Stripe refund: %w", err)
+						}
 					}
 				}
 			} else if mode == "refund" {
@@ -346,9 +708,19 @@ func (s *TicketService) CancelTicketWithMode(ticketID, userID uuid.UUID, mode st
 	switch ticket.Status {
 	case "pending":
 		// If the ticket is pending, the user is cancelling the checkout process.
-		// We can just delete the ticket record.
-		if err := s.db.Delete(&ticket).Error; err != nil {
-			return fmt.Errorf("failed to delete pending ticket: %w", err)
+		// IMPORTANT: We use a GRACE PERIOD to prevent race conditions!
+		//
+		// Grace Period: 5 minutes
+		// - User cancels → Status: "pending_cancellation"
+		// - If PayPal/Stripe payment completes within 5 min → Ticket becomes "paid" ✅
+		// - After 5 min → Cleanup job sets to "cancelled" permanently
+		//
+		// This prevents: User cancels → Payment completes → User paid but no ticket!
+		now := time.Now()
+		ticket.Status = "pending_cancellation"
+		ticket.CancelledAt = &now
+		if err := s.db.Save(&ticket).Error; err != nil {
+			return fmt.Errorf("failed to mark ticket for cancellation: %w", err)
 		}
 		return nil
 
@@ -373,13 +745,22 @@ func (s *TicketService) CancelTicketWithMode(ticketID, userID uuid.UUID, mode st
 			daysUntilEvent := time.Until(ticket.Event.DateFrom).Hours() / 24
 			if int(daysUntilEvent) >= days {
 				refundAmount = ticket.TotalAmount * float64(percent) / 100.0
-				// Stripe-Refund nur bei Betrag > 0 und vorhandenem PaymentIntent
-				if refundAmount > 0 && ticket.StripePaymentIntentID != "" {
-					if _, err := refund.New(&stripe.RefundParams{
-						PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
-						Amount:        stripe.Int64(int64(refundAmount * 100)),
-					}); err != nil {
-						return fmt.Errorf("failed to process refund: %w", err)
+
+				// Process refund based on payment provider
+				if refundAmount > 0 {
+					if ticket.PaymentProvider == "paypal" && s.paypalProvider != nil && ticket.PayPalCaptureID != "" {
+						// PayPal refund
+						if err := s.paypalProvider.ProcessRefund(&ticket, refundAmount); err != nil {
+							return fmt.Errorf("failed to process PayPal refund: %w", err)
+						}
+					} else if ticket.StripePaymentIntentID != "" {
+						// Stripe refund (default)
+						if _, err := refund.New(&stripe.RefundParams{
+							PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
+							Amount:        stripe.Int64(int64(refundAmount * 100)),
+						}); err != nil {
+							return fmt.Errorf("failed to process Stripe refund: %w", err)
+						}
 					}
 				}
 			} else if mode == "refund" {
@@ -426,14 +807,22 @@ func (s *TicketService) RefundTicket(ticketID uuid.UUID, fullRefund bool) error 
 	// Calculate refund amount
 	refundAmount := ticket.GetRefundAmount(fullRefund)
 
-	// Process Stripe refund
-	if ticket.StripePaymentIntentID != "" {
-		_, err := refund.New(&stripe.RefundParams{
-			PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
-			Amount:        stripe.Int64(int64(refundAmount * 100)), // Convert to cents
-		})
-		if err != nil {
-			return fmt.Errorf("failed to process refund: %w", err)
+	// Process refund based on payment provider
+	if ticket.PaymentProvider == "paypal" && s.paypalProvider != nil {
+		// PayPal refund
+		if err := s.paypalProvider.ProcessRefund(&ticket, refundAmount); err != nil {
+			return fmt.Errorf("failed to process PayPal refund: %w", err)
+		}
+	} else {
+		// Stripe refund (default/fallback)
+		if ticket.StripePaymentIntentID != "" {
+			_, err := refund.New(&stripe.RefundParams{
+				PaymentIntent: stripe.String(ticket.StripePaymentIntentID),
+				Amount:        stripe.Int64(int64(refundAmount * 100)), // Convert to cents
+			})
+			if err != nil {
+				return fmt.Errorf("failed to process Stripe refund: %w", err)
+			}
 		}
 	}
 
@@ -512,14 +901,20 @@ func (s *TicketService) CancelAllTicketsForEvent(eventID uuid.UUID, refundPaid b
 			}
 		case "paid":
 			if refundPaid {
-				// full refund
-				if t.StripePaymentIntentID != "" {
+				// full refund - support both Stripe and PayPal
+				if t.PaymentProvider == "paypal" && s.paypalProvider != nil && t.PayPalCaptureID != "" {
+					// PayPal refund
+					if err := s.paypalProvider.ProcessRefund(t, t.TotalAmount); err != nil {
+						return fmt.Errorf("failed to refund PayPal ticket %s: %w", t.ID, err)
+					}
+				} else if t.StripePaymentIntentID != "" {
+					// Stripe refund (default)
 					_, err := refund.New(&stripe.RefundParams{
 						PaymentIntent: stripe.String(t.StripePaymentIntentID),
 						Amount:        stripe.Int64(int64(t.TotalAmount * 100)),
 					})
 					if err != nil {
-						return fmt.Errorf("failed to refund ticket %s: %w", t.ID, err)
+						return fmt.Errorf("failed to refund Stripe ticket %s: %w", t.ID, err)
 					}
 				}
 				updates := map[string]interface{}{
@@ -568,4 +963,124 @@ func (s *TicketService) RefundEventTickets(eventID uuid.UUID) error {
 	}
 
 	return nil
+}
+
+// CreateTicketWithProvider creates a ticket with a specific payment provider (stripe or paypal)
+// This is the NEW function that supports both providers in parallel
+func (s *TicketService) CreateTicketWithProvider(userID, eventID uuid.UUID, includesPickup bool, pickupAddress, paymentProvider string) (*models.Ticket, string, error) {
+	// Validate payment provider
+	if paymentProvider != "stripe" && paymentProvider != "paypal" {
+		return nil, "", errors.New("invalid payment provider; must be 'stripe' or 'paypal'")
+	}
+
+	// Check if PayPal is requested but not enabled
+	if paymentProvider == "paypal" && s.paypalProvider == nil {
+		return nil, "", errors.New("PayPal is not enabled")
+	}
+
+	// Check if user already has a ticket for this event
+	var existingTicket models.Ticket
+	err := s.db.Where("user_id = ? AND event_id = ? AND status IN ?", userID, eventID, []string{"pending", "paid"}).First(&existingTicket).Error
+	if err == nil {
+		return nil, "", errors.New("user already has a ticket for this event")
+	}
+
+	// Get event details
+	var event models.Event
+	if err := s.db.First(&event, eventID).Error; err != nil {
+		return nil, "", errors.New("event not found")
+	}
+
+	// Get user for group
+	var user models.User
+	if err := s.db.First(&user, userID).Error; err != nil {
+		return nil, "", errors.New("user not found")
+	}
+
+	// Enforce allowed_group
+	if event.AllowedGroup == "guests" && user.Group != "guests" {
+		return nil, "", errors.New("event not available for your group")
+	}
+	if event.AllowedGroup == "bubble" && user.Group != "bubble" {
+		return nil, "", errors.New("event not available for your group")
+	}
+	if event.AllowedGroup == "plus" && user.Group != "plus" {
+		return nil, "", errors.New("event not available for your group")
+	}
+
+	// Check availability
+	availableSpots := event.GetAvailableSpots(s.db)
+	if availableSpots <= 0 {
+		return nil, "", errors.New("event is fully booked")
+	}
+
+	// Determine base price based on user group and event prices
+	basePrice := event.GuestsPrice
+	if user.Group == "bubble" {
+		basePrice = event.BubblePrice
+	}
+	if user.Group == "plus" {
+		basePrice = event.PlusPrice
+	}
+
+	// Get pickup service price
+	pickupPrice := 0.0
+	if includesPickup {
+		var setting models.SystemSetting
+		if err := s.db.Where("key = ?", "pickup_service_price").First(&setting).Error; err == nil {
+			fmt.Sscanf(setting.Value, "%f", &pickupPrice)
+		}
+	}
+
+	// Create ticket
+	ticket := &models.Ticket{
+		UserID:          userID,
+		EventID:         eventID,
+		Status:          "pending",
+		Price:           basePrice,
+		IncludesPickup:  includesPickup,
+		PickupPrice:     pickupPrice,
+		PickupAddress:   pickupAddress,
+		PaymentProvider: paymentProvider,
+	}
+	ticket.CalculateTotalAmount()
+
+	// Save ticket
+	if err := s.db.Create(ticket).Error; err != nil {
+		return nil, "", err
+	}
+
+	// Create checkout session with selected provider
+	var checkoutURL string
+	var provider PaymentProvider
+
+	if paymentProvider == "paypal" {
+		provider = s.paypalProvider
+	} else {
+		provider = s.stripeProvider
+	}
+
+	checkoutURL, err = provider.CreateCheckout(ticket, &event, &user, ticket.TotalAmount)
+	if err != nil {
+		// Delete ticket if checkout creation fails
+		s.db.Delete(ticket)
+		return nil, "", fmt.Errorf("failed to create checkout: %w", err)
+	}
+
+	return ticket, checkoutURL, nil
+}
+
+// UpdateTicketStatus updates the status of a ticket
+func (s *TicketService) UpdateTicketStatus(ticketID uuid.UUID, status string) error {
+	return s.db.Model(&models.Ticket{}).Where("id = ?", ticketID).Update("status", status).Error
+}
+
+// UpdateTicket updates multiple fields of a ticket
+func (s *TicketService) UpdateTicket(ticketID uuid.UUID, updates map[string]interface{}) error {
+	return s.db.Model(&models.Ticket{}).Where("id = ?", ticketID).Updates(updates).Error
+}
+
+// UpdatePayPalCaptureID updates the PayPal capture ID for a ticket
+func (s *TicketService) UpdatePayPalCaptureID(ticketID uuid.UUID, captureID string) error {
+	return s.db.Model(&models.Ticket{}).Where("id = ?", ticketID).Update("paypal_capture_id", captureID).Error
 }

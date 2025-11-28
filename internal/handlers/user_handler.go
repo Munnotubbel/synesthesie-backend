@@ -267,9 +267,10 @@ func (h *UserHandler) BookTicket(c *gin.Context) {
 	userID, _ := c.Get("userID")
 
 	var req struct {
-		EventID        string `json:"event_id" binding:"required"`
-		IncludesPickup bool   `json:"includes_pickup"`
-		PickupAddress  string `json:"pickup_address"`
+		EventID         string `json:"event_id" binding:"required"`
+		IncludesPickup  bool   `json:"includes_pickup"`
+		PickupAddress   string `json:"pickup_address"`
+		PaymentProvider string `json:"payment_provider"` // "stripe" or "paypal" (optional, defaults to stripe)
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -290,12 +291,23 @@ func (h *UserHandler) BookTicket(c *gin.Context) {
 		return
 	}
 
-	// Create ticket
-	ticket, checkoutSession, err := h.ticketService.CreateTicket(
+	// Validate and set default payment provider
+	paymentProvider := req.PaymentProvider
+	if paymentProvider == "" {
+		paymentProvider = "stripe" // Default to Stripe for backward compatibility
+	}
+	if paymentProvider != "stripe" && paymentProvider != "paypal" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payment_provider; must be 'stripe' or 'paypal'"})
+		return
+	}
+
+	// Try new function first (supports both providers)
+	ticket, checkoutURL, err := h.ticketService.CreateTicketWithProvider(
 		userID.(uuid.UUID),
 		eventID,
 		req.IncludesPickup,
 		req.PickupAddress,
+		paymentProvider,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -303,8 +315,9 @@ func (h *UserHandler) BookTicket(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"ticket_id":    ticket.ID,
-		"checkout_url": checkoutSession.URL,
+		"ticket_id":        ticket.ID,
+		"checkout_url":     checkoutURL,
+		"payment_provider": paymentProvider,
 	})
 }
 
@@ -323,7 +336,7 @@ func (h *UserHandler) sendCancellationEmail(ticketID uuid.UUID, cancelledBy stri
 	loc, _ := time.LoadLocation("Europe/Berlin")
 	eventDate := ticket.Event.DateFrom.In(loc).Format("02.01.2006")
 	cancelDate := time.Now().In(loc).Format("02.01.2006 15:04")
-	
+
 	// Calculate refund details
 	refund := ticket.RefundedAmount
 	full := refund > 0 && refund+1e-9 >= ticket.TotalAmount
@@ -426,6 +439,74 @@ func (h *UserHandler) CancelTicketNoRefund(c *gin.Context) {
 	_ = h.sendCancellationEmail(ticketID, "")
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket cancelled successfully"})
+}
+
+// RetryPendingCheckout generates a new checkout URL for a pending ticket
+func (h *UserHandler) RetryPendingCheckout(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	ticketIDStr := c.Param("id")
+
+	ticketID, err := uuid.Parse(ticketIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	checkoutURL, paymentProvider, err := h.ticketService.RetryPendingCheckout(ticketID, userID.(uuid.UUID))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"checkout_url":     checkoutURL,
+		"payment_provider": paymentProvider,
+		"message":          "Checkout URL generated successfully",
+	})
+}
+
+// ConfirmPayment proactively confirms a payment after user returns from payment provider
+// This provides instant confirmation without waiting for webhooks
+func (h *UserHandler) ConfirmPayment(c *gin.Context) {
+	userID, _ := c.Get("userID")
+	ticketIDStr := c.Param("id")
+
+	ticketID, err := uuid.Parse(ticketIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	var req struct {
+		Token     string `json:"token"`      // PayPal order token
+		PayerID   string `json:"payer_id"`   // PayPal payer ID
+		SessionID string `json:"session_id"` // Stripe session ID
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	// Confirm payment via service
+	confirmed, newStatus, err := h.ticketService.ProactiveConfirmPayment(ticketID, userID.(uuid.UUID), req.Token, req.PayerID, req.SessionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if confirmed {
+		c.JSON(http.StatusOK, gin.H{
+			"status":  newStatus,
+			"message": "Payment confirmed successfully",
+		})
+	} else {
+		// Payment not yet confirmed, but no error
+		c.JSON(http.StatusAccepted, gin.H{
+			"status":  newStatus,
+			"message": "Payment verification in progress",
+		})
+	}
 }
 
 // DownloadAsset streams an asset if the user is authenticated and allowed

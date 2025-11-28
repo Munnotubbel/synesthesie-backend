@@ -48,6 +48,15 @@ type Config struct {
 	StripePaymentMethods          []string // e.g. ["paypal"], ["card"], ["card","paypal"], etc.
 	StripeAutomaticPaymentMethods bool
 
+	// PayPal
+	PayPalClientID     string
+	PayPalSecret       string
+	PayPalMode         string // "sandbox" or "live"
+	PayPalWebhookID    string
+	PayPalSuccessURL   string
+	PayPalCancelURL    string
+	PayPalEnabled      bool
+
 	// SMTP
 	SMTPHost     string
 	SMTPPort     int
@@ -167,6 +176,15 @@ func New() *Config {
 		StripeCancelURL:               getEnv("STRIPE_CANCEL_URL", "https://synesthesie.de/payment/cancel"),
 		StripePaymentMethods:          getEnvAsSlice("STRIPE_PAYMENT_METHODS", []string{"card"}),
 		StripeAutomaticPaymentMethods: getEnv("STRIPE_AUTOMATIC_PAYMENT_METHODS", "false") == "true",
+
+		// PayPal
+		PayPalClientID:   getEnv("PAYPAL_CLIENT_ID", ""),
+		PayPalSecret:     getEnv("PAYPAL_SECRET", ""),
+		PayPalMode:       getEnv("PAYPAL_MODE", "sandbox"), // sandbox or live
+		PayPalWebhookID:  getEnv("PAYPAL_WEBHOOK_ID", ""),
+		PayPalSuccessURL: getEnv("PAYPAL_SUCCESS_URL", "https://synesthesie.de/payment/success"),
+		PayPalCancelURL:  getEnv("PAYPAL_CANCEL_URL", "https://synesthesie.de/payment/cancel"),
+		PayPalEnabled:    getEnv("PAYPAL_ENABLED", "false") == "true",
 
 		// SMTP
 		SMTPHost:     getEnv("SMTP_HOST", "smtp.strato.de"),

@@ -360,12 +360,13 @@ func (h *AdminHandler) GetEventDetails(c *gin.Context) {
 
 	// Group participants by user group and sort alphabetically
 	type Participant struct {
-		Name   string `json:"name"`
-		Email  string `json:"email"`
-		Drink1 string `json:"drink1"`
-		Drink2 string `json:"drink2"`
-		Drink3 string `json:"drink3"`
-		Group  string `json:"group"`
+		TicketID string `json:"ticket_id"`
+		Name     string `json:"name"`
+		Email    string `json:"email"`
+		Drink1   string `json:"drink1"`
+		Drink2   string `json:"drink2"`
+		Drink3   string `json:"drink3"`
+		Group    string `json:"group"`
 	}
 
 	groupedParticipants := make(map[string][]Participant)
@@ -382,12 +383,13 @@ func (h *AdminHandler) GetEventDetails(c *gin.Context) {
 		}
 
 		p := Participant{
-			Name:   ticket.User.Name,
-			Email:  ticket.User.Email,
-			Drink1: ticket.User.Drink1,
-			Drink2: ticket.User.Drink2,
-			Drink3: ticket.User.Drink3,
-			Group:  ticket.User.Group,
+			TicketID: ticket.ID.String(),
+			Name:     ticket.User.Name,
+			Email:    ticket.User.Email,
+			Drink1:   ticket.User.Drink1,
+			Drink2:   ticket.User.Drink2,
+			Drink3:   ticket.User.Drink3,
+			Group:    ticket.User.Group,
 		}
 
 		group := ticket.User.Group

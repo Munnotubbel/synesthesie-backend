@@ -426,31 +426,139 @@ Benutzerfelder erweitert:
   ```
 
 #### `POST /user/tickets`
-- **Beschreibung:** Startet den Buchungsprozess für ein Event-Ticket.
+- **Beschreibung:** Startet den Buchungsprozess für ein Event-Ticket mit Stripe oder PayPal.
 - **Request Body:**
   ```json
   {
     "event_id": "string (uuid)",
     "includes_pickup": "boolean",
-    "pickup_address": "string (erforderlich, wenn includes_pickup true ist)"
+    "pickup_address": "string (erforderlich, wenn includes_pickup true ist)",
+    "payment_provider": "string (optional: 'stripe' oder 'paypal', default: 'stripe')"
   }
   ```
 - **Response Body (200 OK):**
   ```json
   {
     "ticket_id": "uuid",
-    "checkout_url": "string (Stripe URL)"
+    "checkout_url": "string (Stripe oder PayPal URL)",
+    "payment_provider": "stripe" | "paypal"
   }
   ```
+- **Hinweis:** PayPal muss serverseitig aktiviert sein (`PAYPAL_ENABLED=true`)
+
+#### `POST /user/tickets/:id/retry-checkout`
+- **Beschreibung:** Generiert eine neue Checkout-URL für ein pending Ticket (z.B. wenn User das Zahlungsfenster geschlossen hat).
+- **Benötigt Authentifizierung.**
+- **Request Body:** Keiner.
+- **Response Body (200 OK):**
+  ```json
+  {
+    "checkout_url": "https://checkout.stripe.com/... oder https://paypal.com/...",
+    "payment_provider": "stripe" | "paypal",
+    "message": "Checkout URL generated successfully"
+  }
+  ```
+- **Response Body (400 Bad Request):**
+  ```json
+  {
+    "error": "ticket is not pending (status: paid)"
+  }
+  ```
+  oder
+  ```json
+  {
+    "error": "ticket not found"
+  }
+  ```
+- **Hinweis:** Funktioniert nur für Tickets mit Status `pending`. Der gleiche Payment Provider wie beim ursprünglichen Checkout wird verwendet.
+
+#### `POST /user/tickets/:id/confirm-payment`
+- **Beschreibung:** Proaktive Zahlungsbestätigung wenn User von Payment-Provider zurückkehrt. Prüft SOFORT bei Stripe/PayPal den Payment-Status und bestätigt das Ticket ohne auf Webhooks zu warten.
+- **Benötigt Authentifizierung.**
+- **Use Case:** Frontend ruft diesen Endpoint auf wenn User zur Success-Page redirected wird. Ermöglicht **sofortige Bestätigung** (wie Shopify, Airbnb).
+- **Request Body:**
+  ```json
+  {
+    "token": "string (PayPal Order Token, optional)",
+    "payer_id": "string (PayPal Payer ID, optional)",
+    "session_id": "string (Stripe Session ID, optional)"
+  }
+  ```
+- **Response Body (200 OK - Zahlung bestätigt):**
+  ```json
+  {
+    "status": "paid",
+    "message": "Payment confirmed successfully"
+  }
+  ```
+- **Response Body (202 Accepted - Noch nicht bestätigt):**
+  ```json
+  {
+    "status": "pending",
+    "message": "Payment verification in progress"
+  }
+  ```
+- **Response Body (400 Bad Request):**
+  ```json
+  {
+    "error": "ticket not found"
+  }
+  ```
+- **Verhalten:**
+  - ✅ Prüft SOFORT bei PayPal/Stripe (keine Wartezeit!)
+  - ✅ Reaktiviert `pending_cancellation` Tickets (Grace Period!)
+  - ✅ Setzt Status auf `paid` wenn bestätigt
+  - ✅ Funktioniert unabhängig von Webhooks
+  - ⏱️ Falls noch nicht bestätigt: Polling übernimmt als Fallback
+- **Vorteile:**
+  - 🚀 Sofortige Bestätigung (0-2 Sekunden)
+  - 🛡️ Löst Race Conditions (pending_cancellation → paid)
+  - ✅ Bessere UX als nur Polling
+  - 💪 Production-Grade (Best Practice)
 
 #### `DELETE /user/tickets/:id`
 - **Beschreibung:** Storniert ein gebuchtes Ticket.
+- **Benötigt Authentifizierung.**
+- **Verhalten:**
+  - **Pending Tickets:** Werden auf `pending_cancellation` gesetzt mit **5 Minuten Grace Period**
+    - ⏱️ **Grace Period:** Wenn PayPal/Stripe-Zahlung innerhalb von 5 Minuten abgeschlossen wird, wird das Ticket automatisch auf `paid` gesetzt ✅
+    - ⏱️ **Nach 5 Minuten:** Ticket wird endgültig auf `cancelled` gesetzt
+    - 🛡️ **Schutz:** Verhindert Race Condition (User cancelt → Zahlung kommt durch → User hat bezahlt aber kein Ticket)
+  - **Paid Tickets:** Werden storniert, ggf. mit Refund (abhängig von Cancellation Policy)
 - **Response Body (200 OK):**
   ```json
   {
     "message": "Ticket cancelled successfully"
   }
   ```
+- **Hinweis:** Die Grace Period schützt vor dem Szenario, dass ein User während der Zahlung das Ticket abbricht, die Zahlung aber trotzdem durchgeht.
+
+---
+
+### **Aktives Payment-Polling (Production-Grade)**
+
+Das Backend nutzt **aktives Polling** zur Zahlungsbestätigung (wie Shopify, Airbnb, Stripe):
+
+#### **Fast-Poll (0-30 Sekunden):**
+- ⚡ Prüft alle **5 Sekunden**
+- 🎯 Für User die aktiv warten
+- ✅ Schnellste Bestätigung
+
+#### **Regular-Poll (30 Sek - 30 Min):**
+- 🔄 Prüft alle **30 Sekunden**
+- 🛡️ Fallback wenn Webhooks fehlschlagen
+- ✅ Fängt alle Edge Cases ab
+
+#### **Grace-Period-Poll (`pending_cancellation`):**
+- ⏱️ Prüft alle **10 Sekunden**
+- 🔒 Während 5-Minuten Grace Period
+- ✅ Reaktiviert Tickets bei erfolgreicher Zahlung
+
+**Vorteile:**
+- ✅ Unabhängig von Webhooks (PayPal Webhooks sind oft unzuverlässig)
+- ✅ Schnellere Bestätigung für User
+- ✅ Höchste Zuverlässigkeit (99.9%)
+- ✅ Production-Grade (Best Practice großer Anbieter)
 
 ---
 
@@ -594,6 +702,7 @@ Benutzerfelder erweitert:
     "participants": {
       "guests": [
         {
+          "ticket_id": "uuid",
           "name": "string",
           "email": "string",
           "drink1": "string",

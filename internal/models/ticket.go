@@ -17,13 +17,23 @@ type Ticket struct {
 	PickupPrice           float64    `json:"pickup_price,omitempty"`
 	PickupAddress         string     `json:"pickup_address,omitempty"`
 	TotalAmount           float64    `gorm:"not null" json:"total_amount"`
-	StripeSessionID       string     `json:"-"`
-	StripePaymentIntentID string     `json:"-"`
-	RefundedAmount        float64    `json:"refunded_amount,omitempty"`
-	RefundedAt            *time.Time `json:"refunded_at,omitempty"`
-	CancelledAt           *time.Time `json:"cancelled_at,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
-	UpdatedAt             time.Time  `json:"updated_at"`
+
+	// Payment Provider (stripe or paypal)
+	PaymentProvider string `gorm:"type:varchar(20);default:'stripe'" json:"payment_provider"`
+
+	// Stripe Payment Details
+	StripeSessionID       string `json:"-"`
+	StripePaymentIntentID string `json:"-"`
+
+	// PayPal Payment Details
+	PayPalOrderID   string `gorm:"type:varchar(255)" json:"-"`
+	PayPalCaptureID string `gorm:"type:varchar(255)" json:"-"`
+
+	RefundedAmount  float64    `json:"refunded_amount,omitempty"`
+	RefundedAt      *time.Time `json:"refunded_at,omitempty"`
+	CancelledAt     *time.Time `json:"cancelled_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 
 	// Relations
 	User  User  `gorm:"foreignKey:UserID" json:"user,omitempty"`

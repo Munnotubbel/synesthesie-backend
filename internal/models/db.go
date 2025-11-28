@@ -70,6 +70,13 @@ func InitRedis(cfg *config.Config) *redis.Client {
 
 // Migrate runs database migrations
 func Migrate(db *gorm.DB) error {
+	// Run manual migrations first (for existing tables)
+	if err := runManualMigrations(db); err != nil {
+		log.Printf("Warning: Manual migrations failed: %v", err)
+		// Don't fail completely, continue with AutoMigrate
+	}
+
+	// Run AutoMigrate for all models
 	return db.AutoMigrate(
 		&User{},
 		&Event{},
@@ -82,4 +89,57 @@ func Migrate(db *gorm.DB) error {
 		&PasswordReset{},
 		&Backup{},
 	)
+}
+
+// runManualMigrations runs manual SQL migrations for existing tables
+func runManualMigrations(db *gorm.DB) error {
+	log.Println("Running manual migrations...")
+
+	// Migration: Add PayPal support columns to tickets table
+	if err := addPayPalSupportToTickets(db); err != nil {
+		return fmt.Errorf("failed to add PayPal support: %w", err)
+	}
+
+	log.Println("Manual migrations completed successfully")
+	return nil
+}
+
+// addPayPalSupportToTickets adds PayPal-related columns to tickets table
+func addPayPalSupportToTickets(db *gorm.DB) error {
+	// Check if columns already exist
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.columns
+		WHERE table_name = 'tickets'
+		AND column_name = 'paypal_capture_id'
+	`).Scan(&count).Error
+
+	if err != nil {
+		return err
+	}
+
+	// If column already exists, skip
+	if count > 0 {
+		log.Println("PayPal columns already exist in tickets table, skipping migration")
+		return nil
+	}
+
+	log.Println("Adding PayPal support columns to tickets table...")
+
+	// Add columns
+	sqls := []string{
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(20) NOT NULL DEFAULT 'stripe'`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS paypal_order_id VARCHAR(255)`,
+		`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS paypal_capture_id VARCHAR(255)`,
+	}
+
+	for _, sql := range sqls {
+		if err := db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("failed to execute: %s - error: %w", sql, err)
+		}
+	}
+
+	log.Println("✅ PayPal support columns added successfully")
+	return nil
 }

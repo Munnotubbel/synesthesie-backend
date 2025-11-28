@@ -108,6 +108,62 @@ func main() {
 		}()
 	}
 
+	// Start periodic cleanup for pending_cancellation tickets (Grace Period)
+	// Finalizes cancellations after 5 minutes grace period
+	go func() {
+		for {
+			finalized, err := ticketService.CleanupPendingCancellations()
+			if err != nil {
+				log.Printf("Pending cancellation cleanup error: %v", err)
+			} else if finalized > 0 {
+				log.Printf("Grace period cleanup: finalized %d cancelled tickets after 5 min grace period", finalized)
+			}
+			time.Sleep(1 * time.Minute) // Check every minute
+		}
+	}()
+
+	// Fast-poll for very recent pending tickets (0-30 seconds old)
+	// Checks every 5 seconds for quick user feedback (like Shopify, Airbnb)
+	go func() {
+		for {
+			confirmed, err := ticketService.FastCheckRecentPending()
+			if err != nil {
+				log.Printf("Fast-poll error: %v", err)
+			} else if confirmed > 0 {
+				log.Printf("✅ Fast-poll: Confirmed %d payments", confirmed)
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}()
+
+	// Regular poll for older pending tickets (30 sec - 30 min old)
+	// Checks every 30 seconds as fallback if webhooks fail
+	go func() {
+		for {
+			confirmed, err := ticketService.CheckPendingPayments()
+			if err != nil {
+				log.Printf("Pending payment check error: %v", err)
+			} else if confirmed > 0 {
+				log.Printf("✅ Pending payment check: Confirmed %d payments", confirmed)
+			}
+			time.Sleep(30 * time.Second)
+		}
+	}()
+
+	// Active check for pending_cancellation tickets (Grace Period)
+	// Checks every 10 seconds during 5-minute grace period
+	go func() {
+		for {
+			reactivated, err := ticketService.CheckPendingCancellations()
+			if err != nil {
+				log.Printf("Pending cancellation check error: %v", err)
+			} else if reactivated > 0 {
+				log.Printf("✅ Grace period: Reactivated %d tickets after finding completed payments", reactivated)
+			}
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
 	// Create admin user if not exists
 	if err := adminService.CreateDefaultAdmin(); err != nil {
 		log.Printf("Failed to create default admin: %v", err)
@@ -133,6 +189,7 @@ func main() {
 	adminHandler := handlers.NewAdminHandler(adminService, eventService, inviteService, userService, ticketService, storageService, s3Service, qrService, backupService, emailService, auditService)
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
+	paypalHandler := handlers.NewPayPalHandler(ticketService, emailService, cfg)
 
 	// Health check outside API group (no /api/v1 prefix)
 	router.GET("/health", func(c *gin.Context) {
@@ -178,9 +235,11 @@ func main() {
 			user.GET("/profile", userHandler.GetProfile)
 			user.PUT("/profile", userHandler.UpdateProfile)
 			user.GET("/events", userHandler.GetUserEvents)
-			user.GET("/tickets", userHandler.GetUserTickets)
-			user.POST("/tickets", userHandler.BookTicket)
-			user.DELETE("/tickets/:id", userHandler.CancelTicket)
+		user.GET("/tickets", userHandler.GetUserTickets)
+		user.POST("/tickets", userHandler.BookTicket)
+		user.POST("/tickets/:id/retry-checkout", userHandler.RetryPendingCheckout)
+		user.POST("/tickets/:id/confirm-payment", userHandler.ConfirmPayment)
+		user.DELETE("/tickets/:id", userHandler.CancelTicket)
 			user.POST("/tickets/:id/cancel-refund", userHandler.CancelTicketRefund)
 			user.POST("/tickets/:id/cancel", userHandler.CancelTicketNoRefund)
 			user.GET("/assets/:id/download", userHandler.DownloadAsset)
@@ -259,8 +318,9 @@ func main() {
 			// DELETE disabled for security - backups are disaster recovery!
 		}
 
-		// Stripe webhook
+		// Payment webhooks
 		api.POST("/stripe/webhook", stripeHandler.HandleWebhook)
+		api.POST("/paypal/webhook", paypalHandler.HandleWebhook)
 	}
 
 	// Start server
