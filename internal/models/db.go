@@ -88,6 +88,7 @@ func Migrate(db *gorm.DB) error {
 		&PhoneVerification{},
 		&PasswordReset{},
 		&Backup{},
+		&Image{}, // Image gallery model
 	)
 }
 

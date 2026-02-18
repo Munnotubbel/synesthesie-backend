@@ -33,15 +33,15 @@ Decimal phases appear between their surrounding integers in numeric order.
 4. S3 bucket remains private with no public access, all content delivered via presigned URLs
 5. Upload rate limiting prevents abuse and orphaned S3 objects are cleaned up on delete
 
-**Plans**: TBD
+**Plans**: 6 plans in 4 waves
 
 Plans:
-- [ ] 01-01: Database models and migrations for Image table
-- [ ] 01-02: S3 bucket configuration and media service foundation
-- [ ] 01-03: Admin image upload endpoints (single and multipart)
-- [ ] 01-04: Admin image management endpoints (delete, visibility, metadata)
-- [ ] 01-05: User image viewing endpoints with presigned URLs
-- [ ] 01-06: Security controls (rate limiting, TTL, orphan cleanup)
+- [ ] 01-01-PLAN.md — Database models and migrations for Image table
+- [ ] 01-02-PLAN.md — Media service foundation and upload config
+- [ ] 01-03-PLAN.md — Admin image upload endpoints (single and batch)
+- [ ] 01-04-PLAN.md — Admin image management endpoints (delete, visibility, metadata)
+- [ ] 01-05-PLAN.md — User image viewing endpoints with presigned URLs
+- [ ] 01-06-PLAN.md — Security controls (rate limiting, TTL, orphan cleanup)
 
 ### Phase 2: Music Set Management
 
@@ -58,13 +58,13 @@ Plans:
 4. Admin can change music set visibility and edit track metadata (title, artist)
 5. S3 storage is properly managed - deletion removes both DB records and S3 objects
 
-**Plans**: TBD
+**Plans**: 4 plans in 4 waves (sequential)
 
 Plans:
-- [ ] 02-01: Database models for MusicSet and MusicTrack tables
-- [ ] 02-02: Admin music set CRUD endpoints
-- [ ] 02-03: Admin track upload and management endpoints
-- [ ] 02-04: Admin visibility and metadata management endpoints
+- [ ] 02-01-PLAN.md — Database models for MusicSet and MusicTrack tables
+- [ ] 02-02-PLAN.md — Admin music set CRUD endpoints (create, list, details, delete)
+- [ ] 02-03-PLAN.md — Admin track upload and management (upload, delete, MIME validation)
+- [ ] 02-04-PLAN.md — Admin visibility and metadata management endpoints
 
 ### Phase 3: Music Streaming & Downloads
 
@@ -91,10 +91,26 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3
+Phases execute in numeric order: 1 -> 2 -> 3
+
+**Wave Structure for Phase 1:**
+```
+Wave 1 (parallel): 01-01, 01-02
+Wave 2: 01-03 (depends on 01-01, 01-02)
+Wave 3 (parallel): 01-04, 01-05 (depend on earlier plans)
+Wave 4: 01-06 (depends on all previous)
+```
+
+**Wave Structure for Phase 2:**
+```
+Wave 1: 02-01 (database models)
+Wave 2: 02-02 (music set CRUD, depends on 02-01)
+Wave 3: 02-03 (track upload, depends on 02-02)
+Wave 4: 02-04 (visibility/metadata, depends on 02-03)
+```
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Infrastructure & Image Gallery | 0/6 | Not started | - |
-| 2. Music Set Management | 0/4 | Not started | - |
+| 1. Infrastructure & Image Gallery | 0/6 | Ready to execute | - |
+| 2. Music Set Management | 0/4 | Plans created | - |
 | 3. Music Streaming & Downloads | 0/4 | Not started | - |
