@@ -1,23 +1,23 @@
 # Requirements: synesthesie-backend Media Features
 
 **Defined:** 2026-02-18
-**Core Value:** Private Community für Musikliebhaber mit qualitätsbewusstem Media-Management
+**Core Value:** Private Community fur Musikliebhaber mit qualitatsbewusstem Media-Management
 
 ## v1 Requirements
 
 ### Infrastructure (INFRA)
 
-- [ ] **INFRA-01**: Neue Umgebungsvariable MEDIA_ASSETS_BUCKET für Medien-Bucket
+- [ ] **INFRA-01**: Neue Umgebungsvariable MEDIA_ASSETS_BUCKET fur Medien-Bucket
 - [ ] **INFRA-02**: Datenbank-Modelle: Image, MusicSet, MusicTrack
-- [ ] **INFRA-03**: GORM AutoMigrate für neue Tabellen
-- [ ] **INFRA-04**: Config-Erweiterung für Media-Settings (Upload-Limits, etc.)
+- [ ] **INFRA-03**: GORM AutoMigrate fur neue Tabellen
+- [ ] **INFRA-04**: Config-Erweiterung fur Media-Settings (Upload-Limits, etc.)
 
 ### Image Gallery - Admin (IMG-ADM)
 
 - [ ] **IMG-ADM-01**: Admin kann einzelne Bilder hochladen
 - [ ] **IMG-ADM-02**: Admin kann mehrere Bilder gleichzeitig hochladen (Multipart)
-- [ ] **IMG-ADM-03**: Admin kann Bilder löschen (S3 + DB)
-- [ ] **IMG-ADM-04**: Admin kann Sichtbarkeit von Bildern ändern (private/public)
+- [ ] **IMG-ADM-03**: Admin kann Bilder loschen (S3 + DB)
+- [ ] **IMG-ADM-04**: Admin kann Sichtbarkeit von Bildern andern (private/public)
 - [ ] **IMG-ADM-05**: Admin kann Bild-Metadaten bearbeiten (Titel, Beschreibung)
 - [ ] **IMG-ADM-06**: MIME-Type Validierung beim Upload (Content-Erkennung)
 
@@ -30,12 +30,12 @@
 ### Music Sets - Admin (MSC-ADM)
 
 - [ ] **MSC-ADM-01**: Admin kann Music-Set erstellen (Titel, Beschreibung)
-- [ ] **MSC-ADM-02**: Admin kann Tracks zu Music-Set hinzufügen
+- [ ] **MSC-ADM-02**: Admin kann Tracks zu Music-Set hinzufugen
 - [ ] **MSC-ADM-03**: Admin kann Tracks aus Music-Set entfernen
-- [ ] **MSC-ADM-04**: Admin kann Music-Set löschen (S3 + DB)
-- [ ] **MSC-ADM-05**: Admin kann Sichtbarkeit von Music-Sets ändern
+- [ ] **MSC-ADM-04**: Admin kann Music-Set loschen (S3 + DB)
+- [ ] **MSC-ADM-05**: Admin kann Sichtbarkeit von Music-Sets andern
 - [ ] **MSC-ADM-06**: Admin kann Track-Metadaten bearbeiten (Titel, Artist)
-- [ ] **MSC-ADM-07**: Größe-Limit für Audio-Uploads (4GB max)
+- [ ] **MSC-ADM-07**: GroBe-Limit fur Audio-Uploads (4GB max)
 
 ### Music Sets - User (MSC-USR)
 
@@ -43,7 +43,7 @@
 - [ ] **MSC-USR-02**: User kann Details eines Music-Sets abrufen (mit Tracks)
 - [ ] **MSC-USR-03**: User kann Track streamen (presigned URL)
 - [ ] **MSC-USR-04**: User kann Track herunterladen (presigned URL)
-- [ ] **MSC-USR-05**: Streaming unterstützt Seeking (Range Requests)
+- [ ] **MSC-USR-05**: Streaming unterstutzt Seeking (Range Requests)
 
 ### Security & Performance (SEC)
 
@@ -56,14 +56,14 @@
 
 ### Optimization (OPT)
 
-- **OPT-01**: Thumbnail-Generierung für Bilder
-- **OPT-02**: Audio-Qualitäts-Tiers (192kbps, 320kbps)
+- **OPT-01**: Thumbnail-Generierung fur Bilder
+- **OPT-02**: Audio-Qualitats-Tiers (192kbps, 320kbps)
 - **OPT-03**: Local Caching mit Singleflight-Pattern
 - **OPT-04**: Cache-Warming bei Freigabe
 
 ### Analytics (ANL)
 
-- **ANL-01**: Track-Aufrufe zählen
+- **ANL-01**: Track-Aufrufe zahlen
 - **ANL-02**: Beliebteste Tracks/Music-Sets
 
 ## Out of Scope
@@ -71,10 +71,10 @@
 | Feature | Reason |
 |---------|--------|
 | On-the-fly Audio Transcoding | Zu rechenintensiv, pre-encode statttdessen |
-| HLS/DASH Streaming | Progressive Download reicht für kleine Community |
+| HLS/DASH Streaming | Progressive Download reicht fur kleine Community |
 | CDN Integration | Strato S3 erstmal ausreichend |
 | Mobile App | Web-first |
-| Waveform Visualization | Nice-to-have für später |
+| Waveform Visualization | Nice-to-have fur spater |
 | Gapless Playback | Komplex, nicht kritisch |
 
 ## Traceability
@@ -114,8 +114,8 @@
 **Coverage:**
 - v1 requirements: 29 total
 - Mapped to phases: 29
-- Unmapped: 0 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-18*
-*Last updated: 2026-02-18 after initial definition*
+*Last updated: 2026-02-18 after roadmap creation*
