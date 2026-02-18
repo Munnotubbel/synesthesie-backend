@@ -133,6 +133,11 @@ type Config struct {
 	AdminAlertEmail              string // Email for security alerts
 	AdminRateLimitActions        int    // Max actions per time window
 	AdminRateLimitWindowMinutes  int    // Time window in minutes
+
+	// Media upload limits
+	UploadMaxImageSize     int64 // Max image size in bytes (default: 25MB)
+	UploadMaxConcurrent    int   // Max concurrent uploads per admin (default: 3)
+	PresignedURLTTLMinutes int   // TTL for presigned URLs in minutes (default: 15)
 }
 
 func New() *Config {
@@ -262,6 +267,11 @@ func New() *Config {
 		AdminAlertEmail:             getEnv("ADMIN_ALERT_EMAIL", getEnv("ADMIN_EMAIL", "admin@synesthesie.de")),
 		AdminRateLimitActions:       getEnvAsInt("ADMIN_RATE_LIMIT_ACTIONS", 10),
 		AdminRateLimitWindowMinutes: getEnvAsInt("ADMIN_RATE_LIMIT_WINDOW_MINUTES", 5),
+
+		// Media upload limits
+		UploadMaxImageSize:     getEnvAsInt64("UPLOAD_MAX_IMAGE_SIZE", 25*1024*1024), // 25MB
+		UploadMaxConcurrent:    getEnvAsInt("UPLOAD_MAX_CONCURRENT", 3),
+		PresignedURLTTLMinutes: getEnvAsInt("PRESIGNED_URL_TTL_MINUTES", 15),
 	}
 }
 
@@ -275,6 +285,14 @@ func getEnv(key, defaultValue string) string {
 func getEnvAsInt(key string, defaultValue int) int {
 	valueStr := getEnv(key, "")
 	if value, err := strconv.Atoi(valueStr); err == nil {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvAsInt64(key string, defaultValue int64) int64 {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.ParseInt(valueStr, 10, 64); err == nil {
 		return value
 	}
 	return defaultValue

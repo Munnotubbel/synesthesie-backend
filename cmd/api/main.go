@@ -62,6 +62,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to init S3 service: %v", err)
 	}
+	mediaService := services.NewMediaService(db, cfg, s3Service)
+	musicService := services.NewMusicService(db, cfg, s3Service)
 	qrService := services.NewQRService(cfg)
 	backupService := services.NewBackupService(db, cfg, s3Service)
 	auditService := services.NewAuditService(db, emailService, cfg)
@@ -190,6 +192,8 @@ func main() {
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
 	paypalHandler := handlers.NewPayPalHandler(ticketService, emailService, cfg)
+	mediaHandler := handlers.NewMediaHandler(mediaService)
+	musicHandler := handlers.NewMusicHandler(musicService)
 
 	// Health check outside API group (no /api/v1 prefix)
 	router.GET("/health", func(c *gin.Context) {
@@ -235,15 +239,22 @@ func main() {
 			user.GET("/profile", userHandler.GetProfile)
 			user.PUT("/profile", userHandler.UpdateProfile)
 			user.GET("/events", userHandler.GetUserEvents)
-		user.GET("/tickets", userHandler.GetUserTickets)
-		user.POST("/tickets", userHandler.BookTicket)
-		user.POST("/tickets/:id/retry-checkout", userHandler.RetryPendingCheckout)
-		user.POST("/tickets/:id/confirm-payment", userHandler.ConfirmPayment)
-		user.DELETE("/tickets/:id", userHandler.CancelTicket)
+			user.GET("/tickets", userHandler.GetUserTickets)
+			user.POST("/tickets", userHandler.BookTicket)
+			user.POST("/tickets/:id/retry-checkout", userHandler.RetryPendingCheckout)
+			user.POST("/tickets/:id/confirm-payment", userHandler.ConfirmPayment)
+			user.DELETE("/tickets/:id", userHandler.CancelTicket)
 			user.POST("/tickets/:id/cancel-refund", userHandler.CancelTicketRefund)
 			user.POST("/tickets/:id/cancel", userHandler.CancelTicketNoRefund)
 			user.GET("/assets/:id/download", userHandler.DownloadAsset)
 			user.GET("/settings/pickup-price", userHandler.GetPickupServicePrice)
+			// Image gallery
+			user.GET("/images", mediaHandler.GetPublicImages)
+			user.GET("/images/:id", mediaHandler.GetPublicImage)
+
+			// Music sets
+			user.GET("/music-sets", musicHandler.GetPublicMusicSets)
+			user.GET("/music-sets/:id", musicHandler.GetPublicMusicSet)
 		}
 
 		// Admin routes
@@ -265,16 +276,19 @@ func main() {
 			admin.POST("/events/:id/deactivate", adminHandler.DeactivateEvent)
 			admin.POST("/events/:id/refund", adminHandler.RefundEventTickets)
 			admin.POST("/events/:id/announce", adminHandler.SendEventAnnouncement)
+			// Generic announcement to all users
+			admin.POST("/users/announce", adminHandler.SendAnnouncementToAllUsers)
+
 			// Generic :id route last
 			admin.GET("/events/:id", adminHandler.GetEventDetails)
 
-		// Invite management
-		admin.GET("/invites", adminHandler.GetAllInvites)
-		admin.GET("/invites/stats", adminHandler.GetInviteStats)
-		admin.POST("/invites", adminHandler.CreateInvite)
-		admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
-		admin.POST("/invites/:id/assign", adminHandler.AssignInvite)
-		admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
+			// Invite management
+			admin.GET("/invites", adminHandler.GetAllInvites)
+			admin.GET("/invites/stats", adminHandler.GetInviteStats)
+			admin.POST("/invites", adminHandler.CreateInvite)
+			admin.DELETE("/invites/:id", adminHandler.DeactivateInvite)
+			admin.POST("/invites/:id/assign", adminHandler.AssignInvite)
+			admin.GET("/invites/:id/qr.pdf", adminHandler.GetInviteQR)
 			admin.GET("/invites/export.csv", adminHandler.ExportInvitesCSV)
 			admin.GET("/invites/export_bubble.csv", adminHandler.ExportInvitesBubbleCSV)
 			admin.GET("/invites/export_guests.csv", adminHandler.ExportInvitesGuestsCSV)
@@ -307,15 +321,43 @@ func main() {
 			// Pickup export
 			admin.GET("/pickups/export.csv", adminHandler.ExportPickupCSV)
 
-			// Asset upload + sync
-			admin.POST("/assets/upload", adminHandler.UploadAsset)
-			admin.POST("/assets/images/sync-missing", adminHandler.SyncImagesMissing)
-
 			// Backup management (read-only for monitoring)
 			admin.GET("/backups", adminHandler.GetAllBackups)
 			admin.GET("/backups/stats", adminHandler.GetBackupStats)
 			admin.POST("/backups/sync", adminHandler.SyncBackupsFromS3)
 			// DELETE disabled for security - backups are disaster recovery!
+
+			// Image gallery management (read operations)
+			admin.GET("/images", mediaHandler.GetAllImages)
+			admin.GET("/images/:id", mediaHandler.GetImageDetails)
+			admin.DELETE("/images/:id", mediaHandler.DeleteImage)
+			admin.PUT("/images/:id/visibility", mediaHandler.UpdateImageVisibility)
+			admin.PUT("/images/:id/metadata", mediaHandler.UpdateImageMetadata)
+
+			// Asset sync
+			admin.POST("/assets/images/sync-missing", adminHandler.SyncImagesMissing)
+
+			// Admin upload routes with rate limiting (SEC-02)
+			uploadGroup := admin.Group("")
+			uploadGroup.Use(middleware.UploadRateLimit(redisClient, cfg))
+			{
+				uploadGroup.POST("/images", mediaHandler.UploadImage)
+				uploadGroup.POST("/images/batch", mediaHandler.UploadImages)
+				uploadGroup.POST("/assets/upload", adminHandler.UploadAsset)
+			}
+
+			// Music set management
+			admin.GET("/music-sets", musicHandler.GetAllMusicSets)
+			admin.GET("/music-sets/:id", musicHandler.GetMusicSetDetails)
+			admin.POST("/music-sets", musicHandler.CreateMusicSet)
+			admin.PUT("/music-sets/:id", musicHandler.UpdateMusicSetMetadata)
+			admin.DELETE("/music-sets/:id", musicHandler.DeleteMusicSet)
+			admin.PUT("/music-sets/:id/visibility", musicHandler.UpdateMusicSetVisibility)
+			admin.POST("/music-sets/:id/tracks", musicHandler.UploadTrack)
+
+			// Track management
+			admin.DELETE("/tracks/:id", musicHandler.DeleteTrack)
+			admin.PUT("/tracks/:id", musicHandler.UpdateTrackMetadata)
 		}
 
 		// Payment webhooks

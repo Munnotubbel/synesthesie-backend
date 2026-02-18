@@ -38,6 +38,366 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 ---
 
+### Bildergalerie (User)
+
+#### `GET /api/v1/user/images`
+- Beschreibung: Ruft alle öffentlichen Bilder ab.
+- Auth: erforderlich.
+- Query-Parameter:
+  - `page` (optional, default: `1`): Seitennummer
+  - `limit` (optional, default: `20`): Anzahl pro Seite (max: 100)
+- Response (200 OK):
+  ```json
+  {
+    "images": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "description": "string",
+        "presigned_url": "string (15 Min gültig)",
+        "created_at": "time.Time"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 50 }
+  }
+  ```
+
+#### `GET /api/v1/user/images/:id`
+- Beschreibung: Ruft ein einzelnes öffentliches Bild ab.
+- Auth: erforderlich.
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "presigned_url": "string (15 Min gültig)",
+    "created_at": "time.Time"
+  }
+  ```
+
+---
+
+### Bildergalerie (Admin)
+
+#### `GET /api/v1/admin/images`
+- Beschreibung: Ruft alle Bilder ab (privat und öffentlich).
+- Auth: Admin erforderlich.
+- Query-Parameter: `page`, `limit`
+- Response (200 OK):
+  ```json
+  {
+    "images": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "description": "string",
+        "visibility": "private|public",
+        "created_at": "time.Time"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 50 }
+  }
+  ```
+
+#### `GET /api/v1/admin/images/:id`
+- Beschreibung: Ruft Details eines einzelnen Bildes ab.
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "private|public",
+    "asset": {
+      "filename": "string",
+      "mime_type": "string",
+      "size_bytes": 12345
+    },
+    "created_at": "time.Time",
+    "updated_at": "time.Time"
+  }
+  ```
+
+#### `POST /api/v1/admin/images`
+- Beschreibung: Lädt ein einzelnes Bild hoch.
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `file` (required): Bilddatei (JPEG, PNG, WebP; max 25MB)
+  - `title` (optional): Titel
+  - `description` (optional): Beschreibung
+  - `visibility` (optional): `private` oder `public` (default: `private`)
+- Response (201 Created):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "string",
+    "created_at": "time.Time"
+  }
+  ```
+- Hinweis: Rate Limiting - max. 30 Uploads pro Tag pro Admin.
+
+#### `POST /api/v1/admin/images/batch`
+- Beschreibung: Lädt mehrere Bilder gleichzeitig hoch.
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `files` (required): Mehrere Bilddateien
+  - `visibility` (optional): `private` oder `public` (default: `private`)
+- Response (201 Created):
+  ```json
+  {
+    "images": [
+      { "id": "uuid", "title": "filename.jpg", "visibility": "string" }
+    ],
+    "uploaded": 5,
+    "failed": 0
+  }
+  ```
+
+#### `PUT /api/v1/admin/images/:id/visibility`
+- Beschreibung: Ändert die Sichtbarkeit eines Bildes.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "visibility": "private|public" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "visibility updated successfully", "visibility": "public" }
+  ```
+
+#### `PUT /api/v1/admin/images/:id/metadata`
+- Beschreibung: Aktualisiert Titel und Beschreibung eines Bildes.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "title": "string", "description": "string" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "image updated successfully" }
+  ```
+
+#### `DELETE /api/v1/admin/images/:id`
+- Beschreibung: Löscht ein Bild inkl. S3-Objekt.
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  { "message": "image deleted successfully", "id": "uuid" }
+  ```
+
+---
+
+### Music Sets (User)
+
+#### `GET /api/v1/user/music-sets`
+- Beschreibung: Ruft alle öffentlichen Music Sets ab.
+- Auth: erforderlich.
+- Query-Parameter: `page`, `limit`
+- Response (200 OK):
+  ```json
+  {
+    "music_sets": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "description": "string",
+        "tracks": [
+          {
+            "id": "uuid",
+            "title": "string",
+            "artist": "string",
+            "track_order": 1,
+            "duration": 180,
+            "presigned_url": "string (15 Min gültig)"
+          }
+        ],
+        "created_at": "time.Time"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 10 }
+  }
+  ```
+
+#### `GET /api/v1/user/music-sets/:id`
+- Beschreibung: Ruft ein einzelnes öffentliches Music Set ab.
+- Auth: erforderlich.
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "tracks": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "artist": "string",
+        "track_order": 1,
+        "duration": 180,
+        "presigned_url": "string (15 Min gültig)"
+      }
+    ],
+    "created_at": "time.Time"
+  }
+  ```
+
+---
+
+### Music Sets (Admin)
+
+#### `GET /api/v1/admin/music-sets`
+- Beschreibung: Ruft alle Music Sets ab (privat und öffentlich).
+- Auth: Admin erforderlich.
+- Query-Parameter: `page`, `limit`
+- Response (200 OK):
+  ```json
+  {
+    "music_sets": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "description": "string",
+        "visibility": "private|public",
+        "track_count": 5,
+        "created_at": "time.Time",
+        "updated_at": "time.Time"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 10 }
+  }
+  ```
+
+#### `GET /api/v1/admin/music-sets/:id`
+- Beschreibung: Ruft Details eines Music Sets mit allen Tracks ab.
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "private|public",
+    "tracks": [
+      {
+        "id": "uuid",
+        "title": "string",
+        "artist": "string",
+        "track_order": 1,
+        "duration": 180,
+        "filename": "track.flac",
+        "mime_type": "audio/flac",
+        "size_bytes": 50000000,
+        "created_at": "time.Time"
+      }
+    ],
+    "created_at": "time.Time",
+    "updated_at": "time.Time"
+  }
+  ```
+
+#### `POST /api/v1/admin/music-sets`
+- Beschreibung: Erstellt ein neues Music Set.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "title": "string (required)", "description": "string (optional)" }
+  ```
+- Response (201 Created):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "private",
+    "created_at": "time.Time"
+  }
+  ```
+
+#### `PUT /api/v1/admin/music-sets/:id`
+- Beschreibung: Aktualisiert Titel und Beschreibung eines Music Sets.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "title": "string", "description": "string" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "music set updated successfully" }
+  ```
+
+#### `PUT /api/v1/admin/music-sets/:id/visibility`
+- Beschreibung: Ändert die Sichtbarkeit eines Music Sets.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "visibility": "private|public" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "visibility updated successfully", "visibility": "public" }
+  ```
+
+#### `DELETE /api/v1/admin/music-sets/:id`
+- Beschreibung: Löscht ein Music Set inkl. aller Tracks und S3-Objekte.
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  { "message": "music set deleted successfully", "id": "uuid" }
+  ```
+
+#### `POST /api/v1/admin/music-sets/:id/tracks`
+- Beschreibung: Lädt einen Track in ein Music Set hoch.
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `file` (required): FLAC-Audiodatei
+  - `title` (optional): Track-Titel
+  - `artist` (optional): Künstlername
+- Response (201 Created):
+  ```json
+  {
+    "id": "uuid",
+    "music_set_id": "uuid",
+    "title": "string",
+    "artist": "string",
+    "track_order": 1,
+    "created_at": "time.Time"
+  }
+  ```
+- Hinweis: Rate Limiting - max. 30 Uploads pro Tag pro Admin.
+
+---
+
+### Track-Management (Admin)
+
+#### `PUT /api/v1/admin/tracks/:id`
+- Beschreibung: Aktualisiert Titel und Künstler eines Tracks.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "title": "string", "artist": "string" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "track updated successfully" }
+  ```
+
+#### `DELETE /api/v1/admin/tracks/:id`
+- Beschreibung: Löscht einen Track inkl. S3-Objekt.
+- Auth: Admin erforderlich.
+- Response (200 OK):
+  ```json
+  { "message": "track deleted successfully" }
+  ```
+
+---
+
 ### Invite QR-Codes
 
 #### `GET /api/v1/admin/invites/:id/qr.pdf`
@@ -621,6 +981,29 @@ Das Backend nutzt **aktives Polling** zur Zahlungsbestätigung (wie Shopify, Air
     }
   }
   ```
+
+##### `POST /admin/users/announce`
+- **Beschreibung:** Sendet eine generische Ankündigungs-Email an **alle aktiven Benutzer** der Plattform.
+- **Request Body:**
+  ```json
+  {
+    "subject": "string (optional: Betreff der Email, Standard: 'Neuigkeiten von Synesthesie')",
+    "message": "string (required: HTML-Nachricht, die im Email-Template angezeigt wird)"
+  }
+  ```
+- **Response Body (200 OK):**
+  ```json
+  {
+    "message": "Announcement sent to X users",
+    "sent": 10,
+    "failed": 0,
+    "total_users": 10
+  }
+  ```
+- **Hinweis:**
+  - Nutzt das Template `generic_announcement.html`.
+  - Sendet E-Mails mit Rate-Limiting (10 E-Mails/Sekunde).
+  - Ignoriert inaktive Benutzer.
 
 ##### `PUT /admin/events/:id`
 - **Beschreibung:** Aktualisiert ein bestehendes Event.

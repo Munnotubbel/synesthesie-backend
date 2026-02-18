@@ -41,6 +41,7 @@ func (s *EmailService) loadTemplates() {
 		"cancellation_confirmation.html",
 		"password_reset.html",
 		"event_announcement.html",
+		"generic_announcement.html",
 	}
 
 	for _, file := range templateFiles {
@@ -180,6 +181,16 @@ func (s *EmailService) SendEventAnnouncementToParticipants(to, eventName, subjec
 	data["Message"] = template.HTML(message)
 
 	return s.sendEmail(to, subject, "event_announcement.html", data)
+}
+
+// SendGenericAnnouncement sends a generic announcement to any user
+func (s *EmailService) SendGenericAnnouncement(to, subject, message string, data map[string]interface{}) error {
+	if subject == "" {
+		subject = "Neuigkeiten von Synesthesie"
+	}
+	data["Subject"] = subject
+	data["Message"] = template.HTML(message)
+	return s.sendEmail(to, subject, "generic_announcement.html", data)
 }
 
 // sendEmail sends an email using the specified template

@@ -173,3 +173,12 @@ func (s *S3Service) GetBackupClient() (*s3.Client, error) {
 	}
 	return s.backupClient, nil
 }
+
+// DeleteMedia deletes an object from the media bucket
+func (s *S3Service) DeleteMedia(ctx context.Context, bucket, key string) error {
+	_, err := s.mediaClient.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	})
+	return err
+}

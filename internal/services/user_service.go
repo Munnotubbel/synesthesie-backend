@@ -158,6 +158,15 @@ func (s *UserService) SearchUsers(query string, offset, limit int) ([]*models.Us
 	return users, total, nil
 }
 
+// GetAllActiveUsers retrieves all active users without pagination
+func (s *UserService) GetAllActiveUsers() ([]*models.User, error) {
+	var users []*models.User
+	if err := s.db.Model(&models.User{}).Where("is_active = ?", true).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // DeactivateUser deactivates a user account
 func (s *UserService) DeactivateUser(userID uuid.UUID) error {
 	result := s.db.Model(&models.User{}).Where("id = ?", userID).Update("is_active", false)

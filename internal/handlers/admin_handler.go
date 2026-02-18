@@ -1774,6 +1774,87 @@ func (h *AdminHandler) SendEventAnnouncement(c *gin.Context) {
 	})
 }
 
+// SendAnnouncementToAllUsers sends an email/message to all active users
+func (h *AdminHandler) SendAnnouncementToAllUsers(c *gin.Context) {
+	var req struct {
+		Subject string `json:"subject"`
+		Message string `json:"message" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Fetch all active users
+	users, err := h.userService.GetAllActiveUsers()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve users"})
+		return
+	}
+
+	if len(users) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No active users found"})
+		return
+	}
+
+	// Send emails to all users with rate limiting
+	sentCount := 0
+	failedCount := 0
+
+	// Rate limiting: Max 10 emails per second
+	const maxEmailsPerSecond = 10
+	const delayBetweenEmails = time.Second / maxEmailsPerSecond
+
+	log.Printf("Starting to send generic announcement to %d users (rate: %d/sec)", len(users), maxEmailsPerSecond)
+
+	for i, user := range users {
+		// Prepare email data
+		emailData := map[string]interface{}{
+			"Name":    user.Name,
+			"Message": req.Message,
+		}
+
+		// Send email with retry logic (max 3 attempts)
+		maxRetries := 3
+		var sendErr error
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			sendErr = h.adminService.SendGenericAnnouncementEmail(user.Email, req.Subject, req.Message, emailData)
+			if sendErr == nil {
+				sentCount++
+				log.Printf("✓ Email sent to %s (%d/%d)", user.Email, i+1, len(users))
+				break
+			}
+
+			// Retry with exponential backoff
+			if attempt < maxRetries {
+				backoffDelay := time.Duration(attempt) * time.Second
+				log.Printf("⚠️ Failed to send to %s (attempt %d/%d), retrying in %v: %v", user.Email, attempt, maxRetries, backoffDelay, sendErr)
+				time.Sleep(backoffDelay)
+			}
+		}
+
+		if sendErr != nil {
+			log.Printf("✗ Failed to send email to %s after %d attempts: %v", user.Email, maxRetries, sendErr)
+			failedCount++
+		}
+
+		// Rate limiting: Wait before sending next email (except for last one)
+		if i < len(users)-1 {
+			time.Sleep(delayBetweenEmails)
+		}
+	}
+
+	log.Printf("Generic announcement sending completed: %d sent, %d failed out of %d total", sentCount, failedCount, len(users))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":     fmt.Sprintf("Announcement sent to %d users", sentCount),
+		"sent":        sentCount,
+		"failed":      failedCount,
+		"total_users": len(users),
+	})
+}
+
 // sendCancellationEmail sends a cancellation confirmation email with proper data formatting (Admin version)
 func (h *AdminHandler) sendCancellationEmail(ticketID uuid.UUID, cancelledBy string) error {
 	if h.emailService == nil {

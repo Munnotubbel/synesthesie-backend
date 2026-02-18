@@ -36,6 +36,14 @@ func (s *AdminService) SendEventAnnouncementEmail(to, eventName, subject, messag
 	return s.email.SendEventAnnouncementToParticipants(to, eventName, subject, message, data)
 }
 
+// SendGenericAnnouncementEmail sends a generic announcement email to a user
+func (s *AdminService) SendGenericAnnouncementEmail(to, subject, message string, data map[string]interface{}) error {
+	if s.email == nil {
+		return errors.New("email service not attached")
+	}
+	return s.email.SendGenericAnnouncement(to, subject, message, data)
+}
+
 // CreateAssetRecord stores an asset metadata record
 func (s *AdminService) CreateAssetRecord(key, filename string, size int64, checksum string, isImage bool) (*models.Asset, error) {
 	visibility := models.AssetVisibilityPrivate
