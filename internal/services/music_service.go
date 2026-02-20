@@ -1,8 +1,13 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,20 +17,22 @@ import (
 )
 
 type MusicService struct {
-	db        *gorm.DB
-	cfg       *config.Config
-	s3Service *S3Service
+	db             *gorm.DB
+	cfg            *config.Config
+	s3Service      *S3Service
+	storageService *StorageService
 }
 
-func NewMusicService(db *gorm.DB, cfg *config.Config, s3Service *S3Service) *MusicService {
+func NewMusicService(db *gorm.DB, cfg *config.Config, s3Service *S3Service, storageService *StorageService) *MusicService {
 	return &MusicService{
-		db:        db,
-		cfg:       cfg,
-		s3Service: s3Service,
+		db:             db,
+		cfg:            cfg,
+		s3Service:      s3Service,
+		storageService: storageService,
 	}
 }
 
-// CreateMusicSet creates a new music set (MSC-ADM-01)
+// CreateMusicSet creates a new music set (without file, use UploadMusicSetFile later)
 func (s *MusicService) CreateMusicSet(title, description string) (*models.MusicSet, error) {
 	if title == "" {
 		return nil, fmt.Errorf("title is required")
@@ -44,6 +51,108 @@ func (s *MusicService) CreateMusicSet(title, description string) (*models.MusicS
 	return musicSet, nil
 }
 
+// UploadMusicSetFile uploads the audio file for a music set
+// This replaces any existing file
+func (s *MusicService) UploadMusicSetFile(ctx context.Context, setID uuid.UUID, filename string, data []byte) (*models.MusicSet, error) {
+	// Verify music set exists
+	var musicSet models.MusicSet
+	if err := s.db.First(&musicSet, "id = ?", setID).Error; err != nil {
+		return nil, fmt.Errorf("music set not found: %w", err)
+	}
+
+	// Validate file extension
+	ext := strings.ToLower(filepath.Ext(filename))
+	allowedExts := map[string]bool{
+		".flac": true,
+		".mp3":  true,
+		".wav":  true,
+		".aac":  true,
+		".m4a":  true,
+		".ogg":  true,
+		".oga":  true,
+	}
+	if !allowedExts[ext] {
+		return nil, fmt.Errorf("unsupported audio format: %s (allowed: flac, mp3, wav, aac, m4a, ogg)", ext)
+	}
+
+	// Detect MIME type: always prefer extension (content sniffing misidentifies FLAC as audio/mpeg)
+	mimeType := getMimeTypeFromExtension(ext)
+	if mimeType == "application/octet-stream" {
+		// Extension unknown — try content sniffing
+		sniffed := http.DetectContentType(data)
+		if strings.HasPrefix(sniffed, "audio/") {
+			mimeType = sniffed
+		}
+	}
+
+	// Generate S3 key
+	key := fmt.Sprintf("music/%s%s", uuid.New().String(), ext)
+
+	// Upload to S3 (audio bucket)
+	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, key, data, mimeType); err != nil {
+		return nil, fmt.Errorf("failed to upload to S3: %w", err)
+	}
+
+	// If set already has an asset, delete the old one
+	if musicSet.AssetID != nil {
+		var oldAsset models.Asset
+		if err := s.db.First(&oldAsset, "id = ?", *musicSet.AssetID).Error; err == nil {
+			// Delete old S3 object
+			_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, oldAsset.Key)
+			// Delete old asset record
+			s.db.Delete(&oldAsset)
+		}
+	}
+
+	// Create Asset record
+	asset := &models.Asset{
+		Key:        key,
+		Filename:   filename,
+		MimeType:   mimeType,
+		SizeBytes:  int64(len(data)),
+		Visibility: models.AssetVisibilityPrivate,
+	}
+	if err := s.db.Create(asset).Error; err != nil {
+		// Attempt S3 cleanup on DB failure (SEC-04)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
+		return nil, fmt.Errorf("failed to create asset record: %w", err)
+	}
+
+	// Update music set with asset ID
+	musicSet.AssetID = &asset.ID
+	if err := s.db.Save(&musicSet).Error; err != nil {
+		// Cleanup
+		s.db.Delete(asset)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
+		return nil, fmt.Errorf("failed to update music set: %w", err)
+	}
+
+	// Load asset relation
+	musicSet.Asset = asset
+
+	return &musicSet, nil
+}
+
+// getMimeTypeFromExtension returns MIME type based on file extension
+func getMimeTypeFromExtension(ext string) string {
+	switch ext {
+	case ".flac":
+		return "audio/flac"
+	case ".mp3":
+		return "audio/mpeg"
+	case ".wav":
+		return "audio/wav"
+	case ".aac":
+		return "audio/aac"
+	case ".m4a":
+		return "audio/mp4"
+	case ".ogg", ".oga":
+		return "audio/ogg"
+	default:
+		return "application/octet-stream"
+	}
+}
+
 // GetAllMusicSets returns all music sets for admin (with pagination)
 func (s *MusicService) GetAllMusicSets(limit, offset int) ([]models.MusicSet, int64, error) {
 	var sets []models.MusicSet
@@ -53,67 +162,48 @@ func (s *MusicService) GetAllMusicSets(limit, offset int) ([]models.MusicSet, in
 		return nil, 0, err
 	}
 
-	// Preload tracks with their assets, ordered by track_order
-	if err := s.db.Preload("Tracks", func(db *gorm.DB) *gorm.DB {
-		return db.Order("track_order ASC")
-	}).Preload("Tracks.Asset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
+	if err := s.db.Preload("Asset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
 		return nil, 0, err
 	}
 
 	return sets, total, nil
 }
 
-// GetMusicSetByID returns a single music set with all tracks
+// GetMusicSetByID returns a single music set
 func (s *MusicService) GetMusicSetByID(setID uuid.UUID) (*models.MusicSet, error) {
 	var musicSet models.MusicSet
-	if err := s.db.Preload("Tracks", func(db *gorm.DB) *gorm.DB {
-		return db.Order("track_order ASC")
-	}).Preload("Tracks.Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
+	if err := s.db.Preload("Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
 		return nil, err
 	}
 	return &musicSet, nil
 }
 
-// DeleteMusicSet deletes a music set and all its tracks (MSC-ADM-04)
+// DeleteMusicSet deletes a music set and its audio file
 // Follows SEC-04: Delete S3 objects first, then DB records
 func (s *MusicService) DeleteMusicSet(ctx context.Context, setID uuid.UUID) error {
 	var musicSet models.MusicSet
-	if err := s.db.Preload("Tracks.Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
+	if err := s.db.Preload("Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
 		return fmt.Errorf("music set not found: %w", err)
 	}
 
-	// Delete all track S3 objects FIRST (SEC-04)
-	for _, track := range musicSet.Tracks {
-		if track.Asset != nil {
-			if err := s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, track.Asset.Key); err != nil {
-				// Log but continue - S3 might already be gone
-			}
+	// Delete S3 object FIRST (SEC-04)
+	if musicSet.Asset != nil {
+		if err := s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, musicSet.Asset.Key); err != nil {
+			// Log but continue - S3 might already be gone
 		}
+		// Delete asset record
+		s.db.Delete(musicSet.Asset)
 	}
 
-	// Delete DB records (MusicSet CASCADE deletes Tracks, then delete Assets manually)
-	// First collect asset IDs to delete after
-	assetIDs := make([]uuid.UUID, 0)
-	for _, track := range musicSet.Tracks {
-		if track.Asset != nil {
-			assetIDs = append(assetIDs, track.Asset.ID)
-		}
-	}
-
-	// Delete the music set (CASCADE will delete tracks)
+	// Delete the music set
 	if err := s.db.Delete(&musicSet).Error; err != nil {
 		return fmt.Errorf("failed to delete music set: %w", err)
-	}
-
-	// Delete asset records
-	if len(assetIDs) > 0 {
-		s.db.Delete(&models.Asset{}, "id IN ?", assetIDs)
 	}
 
 	return nil
 }
 
-// UpdateMusicSetVisibility changes the visibility of a music set (MSC-ADM-05)
+// UpdateMusicSetVisibility changes the visibility of a music set
 func (s *MusicService) UpdateMusicSetVisibility(setID uuid.UUID, visibility string) error {
 	if visibility != "private" && visibility != "public" {
 		return fmt.Errorf("invalid visibility: must be 'private' or 'public'")
@@ -136,113 +226,12 @@ func (s *MusicService) UpdateMusicSetMetadata(setID uuid.UUID, title, descriptio
 	return s.db.Model(&models.MusicSet{}).Where("id = ?", setID).Updates(updates).Error
 }
 
-// UploadTrack uploads a track to a music set (MSC-ADM-02)
-func (s *MusicService) UploadTrack(ctx context.Context, setID uuid.UUID, filename string, data []byte, title, artist string) (*models.MusicTrack, error) {
-	// Verify music set exists
-	var musicSet models.MusicSet
-	if err := s.db.First(&musicSet, "id = ?", setID).Error; err != nil {
-		return nil, fmt.Errorf("music set not found: %w", err)
-	}
-
-	// Get current max track order for this set
-	var maxOrder int
-	s.db.Model(&models.MusicTrack{}).Where("music_set_id = ?", setID).Select("COALESCE(MAX(track_order), 0)").Scan(&maxOrder)
-
-	// Generate S3 key
-	key := fmt.Sprintf("music/%s/%s%s", setID.String(), uuid.New().String(), getFileExtension(filename))
-
-	// Upload to S3 (audio bucket)
-	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, key, data, "audio/flac"); err != nil {
-		return nil, fmt.Errorf("failed to upload to S3: %w", err)
-	}
-
-	// Create Asset record
-	asset := &models.Asset{
-		Key:        key,
-		Filename:   filename,
-		MimeType:   "audio/flac",
-		SizeBytes:  int64(len(data)),
-		Visibility: models.AssetVisibilityPrivate,
-	}
-	if err := s.db.Create(asset).Error; err != nil {
-		// Attempt S3 cleanup on DB failure (SEC-04)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
-		return nil, fmt.Errorf("failed to create asset record: %w", err)
-	}
-
-	// Create MusicTrack record
-	track := &models.MusicTrack{
-		MusicSetID: setID,
-		AssetID:    asset.ID,
-		Title:      title,
-		Artist:     artist,
-		TrackOrder: maxOrder + 1,
-	}
-	if err := s.db.Create(track).Error; err != nil {
-		// Cleanup: delete asset and S3 object
-		s.db.Delete(asset)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
-		return nil, fmt.Errorf("failed to create track record: %w", err)
-	}
-
-	// Load asset relation
-	track.Asset = asset
-
-	return track, nil
-}
-
-// DeleteTrack deletes a single track from a music set (MSC-ADM-03)
-func (s *MusicService) DeleteTrack(ctx context.Context, trackID uuid.UUID) error {
-	var track models.MusicTrack
-	if err := s.db.Preload("Asset").First(&track, "id = ?", trackID).Error; err != nil {
-		return fmt.Errorf("track not found: %w", err)
-	}
-
-	// Delete from S3 FIRST (SEC-04)
-	if track.Asset != nil {
-		if err := s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, track.Asset.Key); err != nil {
-			// Log but continue - S3 might already be gone
-		}
-	}
-
-	// Delete track record
-	if err := s.db.Delete(&track).Error; err != nil {
-		return fmt.Errorf("failed to delete track: %w", err)
-	}
-
-	// Delete asset record
-	if track.Asset != nil {
-		s.db.Delete(track.Asset)
-	}
-
-	return nil
-}
-
-// UpdateTrackMetadata updates track title and artist (MSC-ADM-06)
-func (s *MusicService) UpdateTrackMetadata(trackID uuid.UUID, title, artist string) error {
-	updates := map[string]interface{}{}
-	if title != "" {
-		updates["title"] = title
-	}
-	if artist != "" {
-		updates["artist"] = artist
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	return s.db.Model(&models.MusicTrack{}).Where("id = ?", trackID).Updates(updates).Error
-}
-
-// UpdateTrackOrder updates the track order
-func (s *MusicService) UpdateTrackOrder(trackID uuid.UUID, order int) error {
-	return s.db.Model(&models.MusicTrack{}).Where("id = ?", trackID).Update("track_order", order).Error
-}
-
-// GetPresignedTrackURL generates a presigned URL for a track
-func (s *MusicService) GetPresignedTrackURL(ctx context.Context, key string) (string, error) {
-	ttl := time.Duration(s.cfg.PresignedURLTTLMinutes) * time.Minute
+// GetPresignedMusicSetURL generates a presigned URL for the audio file
+// Uses longer TTL for audio (default 2 hours) to support long DJ sets
+func (s *MusicService) GetPresignedMusicSetURL(ctx context.Context, key string) (string, error) {
+	ttl := time.Duration(s.cfg.AudioURLTTLMinutes) * time.Minute
 	if ttl == 0 {
-		ttl = 15 * time.Minute
+		ttl = 120 * time.Minute // 2 hours default for long sets
 	}
 	return s.s3Service.PresignMediaGet(ctx, s.cfg.MediaAudioBucket, key, ttl)
 }
@@ -257,21 +246,49 @@ func (s *MusicService) GetPublicMusicSets(limit, offset int) ([]models.MusicSet,
 		return nil, 0, err
 	}
 
-	if err := query.Preload("Tracks", func(db *gorm.DB) *gorm.DB {
-		return db.Order("track_order ASC")
-	}).Preload("Tracks.Asset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
+	if err := query.Preload("Asset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
 		return nil, 0, err
 	}
 
 	return sets, total, nil
 }
 
-// Helper function to get file extension
-func getFileExtension(filename string) string {
-	for i := len(filename) - 1; i >= 0; i-- {
-		if filename[i] == '.' {
-			return filename[i:]
-		}
+// GetLocalMusicPath returns the local file path for a music file
+// Downloads from S3 if not present locally
+func (s *MusicService) GetLocalMusicPath(ctx context.Context, key string) (string, error) {
+	localPath := filepath.Join(s.cfg.LocalAssetsPath, filepath.FromSlash(key))
+
+	// Check if file exists locally
+	if _, err := os.Stat(localPath); err == nil {
+		return localPath, nil
+	}
+
+	// Not local - download from S3
+	if s.storageService == nil {
+		return "", fmt.Errorf("audio not available locally and no storage service configured")
+	}
+
+	data, err := s.s3Service.DownloadMedia(ctx, s.cfg.MediaAudioBucket, key)
+	if err != nil {
+		return "", fmt.Errorf("failed to download from S3: %w", err)
+	}
+
+	// Save to local cache
+	absPath, _, _, err := s.storageService.SaveStream(ctx, key, bytes.NewReader(data.Bytes()))
+	if err != nil {
+		return "", fmt.Errorf("failed to cache audio locally: %w", err)
+	}
+
+	return absPath, nil
+}
+
+// GetLocalMusicPathIfExists returns the local file path if it exists, empty string otherwise
+// Does NOT download from S3 - use for checking cache without blocking
+func (s *MusicService) GetLocalMusicPathIfExists(key string) string {
+	localPath := filepath.Join(s.cfg.LocalAssetsPath, filepath.FromSlash(key))
+
+	if _, err := os.Stat(localPath); err == nil {
+		return localPath
 	}
 	return ""
 }

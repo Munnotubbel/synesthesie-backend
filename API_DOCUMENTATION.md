@@ -76,6 +76,20 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
   }
   ```
 
+#### `GET /api/v1/user/images/:id/file`
+- Beschreibung: Serviert ein öffentliches Bild direkt aus dem lokalen Cache (schnell!).
+- Auth: erforderlich.
+- Response: Bilddatei (image/webp bevorzugt, fallback zu image/jpeg/png)
+- Headers:
+  - `Cache-Control: public, max-age=31536000` (1 Jahr Cache)
+  - `Content-Type: image/webp` (oder original Format)
+  - `Content-Disposition: inline; filename="..."`
+- Hinweis:
+  - Lädt automatisch von S3 nach falls nicht lokal vorhanden
+  - **WebP bevorzugt**: Background-Worker konvertiert automatisch zu WebP (90% Qualität)
+  - Deutlich schneller als presigned URLs von Strato S3
+  - WebP ist 25-35% kleiner bei gleicher Qualität
+
 ---
 
 ### Bildergalerie (Admin)
@@ -119,6 +133,15 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "updated_at": "time.Time"
   }
   ```
+
+#### `GET /api/v1/admin/images/:id/file`
+- Beschreibung: Serviert ein Bild direkt aus dem lokalen Cache (alle Bilder, auch private).
+- Auth: Admin erforderlich.
+- Response: Bilddatei (image/jpeg, image/png, image/webp)
+- Headers:
+  - `Cache-Control: private, max-age=3600` (1 Stunde Cache)
+  - `Content-Type: image/...`
+  - `Content-Disposition: inline; filename="..."`
 
 #### `POST /api/v1/admin/images`
 - Beschreibung: Lädt ein einzelnes Bild hoch.
@@ -547,8 +570,12 @@ gelöscht werden.
 - Lokal/Cache/Sync:
   - `LOCAL_ASSETS_PATH` (Standard `/data/assets`)
   - `MEDIA_SYNC_ON_START` (true/false) – fehlende Bilder bei Start synchronisieren
+  - `WEBP_CONVERSION_ENABLED` (true/false, Standard: true) – Automatische WebP-Konvertierung
   - `MEDIA_CACHE_AUDIO` (true/false) – Audio lokal cachen
   - `AUDIO_CACHE_PATH` (Standard `/data/assets_cache/audio`)
+- URL TTL:
+  - `PRESIGNED_URL_TTL_MINUTES` (Standard: 15) – Gültigkeit für Bild-URLs
+  - `AUDIO_URL_TTL_MINUTES` (Standard: 120) – Gültigkeit für Audio-URLs (2h für lange Sets)
 
 ### **Health Check**
 

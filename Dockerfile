@@ -22,8 +22,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o 
 # Runtime stage
 FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk add --no-cache ca-certificates tzdata
+# Install runtime dependencies (including cwebp for image conversion)
+RUN apk add --no-cache ca-certificates tzdata libwebp-tools
 
 # Create non-root user
 RUN addgroup -g 1000 -S synesthesie && \

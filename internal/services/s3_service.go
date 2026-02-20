@@ -1,8 +1,10 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"time"
@@ -72,11 +74,17 @@ func (s *S3Service) UploadMedia(ctx context.Context, bucket, key string, body in
 		ContentType: &ctype,
 		ACL:         s3types.ObjectCannedACLPrivate,
 	}
-	if r, ok := body.(interface {
-		Read(p []byte) (n int, err error)
-	}); ok {
-		in.Body = r
+
+	// Handle different body types
+	switch v := body.(type) {
+	case io.Reader:
+		in.Body = v
+	case []byte:
+		in.Body = bytes.NewReader(v)
+	default:
+		return fmt.Errorf("unsupported body type: %T", body)
 	}
+
 	_, err := uploader.Upload(ctx, in, func(u *manager.Uploader) { u.PartSize = 10 * 1024 * 1024 })
 	return err
 }
@@ -138,6 +146,19 @@ func (s *S3Service) DownloadMediaToFile(ctx context.Context, bucket, key, destPa
 	downloader := manager.NewDownloader(s.mediaClient)
 	_, err = downloader.Download(ctx, f, &s3.GetObjectInput{Bucket: &bucket, Key: &key})
 	return err
+}
+
+// StreamMedia returns a reader for streaming directly from S3 (no memory buffering)
+// Caller MUST close the returned ReadCloser
+func (s *S3Service) StreamMedia(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
+	resp, err := s.mediaClient.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
 }
 
 // List media keys with prefix

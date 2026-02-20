@@ -42,7 +42,7 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 #### `GET /api/v1/user/images`
 - Beschreibung: Ruft alle öffentlichen Bilder ab.
-- Auth: erforderlich.
+- Auth: erforderlich (Bearer Token).
 - Query-Parameter:
   - `page` (optional, default: `1`): Seitennummer
   - `limit` (optional, default: `20`): Anzahl pro Seite (max: 100)
@@ -54,27 +54,42 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "id": "uuid",
         "title": "string",
         "description": "string",
-        "presigned_url": "string (15 Min gültig)",
+        "presigned_url": "/api/v1/user/images/uuid/file",
         "created_at": "time.Time"
       }
     ],
     "pagination": { "page": 1, "limit": 20, "total": 50 }
   }
   ```
+- **Hinweis:** `presigned_url` ist eine Proxy-URL (nicht S3). Erfordert Bearer Token.
 
 #### `GET /api/v1/user/images/:id`
 - Beschreibung: Ruft ein einzelnes öffentliches Bild ab.
-- Auth: erforderlich.
+- Auth: erforderlich (Bearer Token).
 - Response (200 OK):
   ```json
   {
     "id": "uuid",
     "title": "string",
     "description": "string",
-    "presigned_url": "string (15 Min gültig)",
+    "presigned_url": "/api/v1/user/images/uuid/file",
     "created_at": "time.Time"
   }
   ```
+
+#### `GET /api/v1/user/images/:id/file`
+- Beschreibung: Serviert ein öffentliches Bild direkt aus dem lokalen Cache (schnell!).
+- Auth: erforderlich (Bearer Token).
+- Response: Bilddatei (image/webp bevorzugt, fallback zu image/jpeg/png)
+- Headers:
+  - `Cache-Control: public, max-age=31536000` (1 Jahr Cache)
+  - `Content-Type: image/webp` (oder original Format)
+  - `Content-Disposition: inline; filename="..."`
+- Hinweis:
+  - Lädt automatisch von S3 nach falls nicht lokal vorhanden
+  - **WebP bevorzugt**: Background-Worker konvertiert automatisch zu WebP (90% Qualität)
+  - Deutlich schneller als presigned URLs von Strato S3
+  - WebP ist 25-35% kleiner bei gleicher Qualität
 
 ---
 
@@ -93,6 +108,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "title": "string",
         "description": "string",
         "visibility": "private|public",
+        "presigned_url": "/api/v1/admin/images/uuid/file",
+        "file_url": "/api/v1/admin/images/uuid/file",
         "created_at": "time.Time"
       }
     ],
@@ -119,6 +136,15 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "updated_at": "time.Time"
   }
   ```
+
+#### `GET /api/v1/admin/images/:id/file`
+- Beschreibung: Serviert ein Bild direkt aus dem lokalen Cache (alle Bilder, auch private).
+- Auth: Admin erforderlich.
+- Response: Bilddatei (image/jpeg, image/png, image/webp)
+- Headers:
+  - `Cache-Control: private, max-age=3600` (1 Stunde Cache)
+  - `Content-Type: image/...`
+  - `Content-Disposition: inline; filename="..."`
 
 #### `POST /api/v1/admin/images`
 - Beschreibung: Lädt ein einzelnes Bild hoch.
@@ -197,7 +223,7 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 #### `GET /api/v1/user/music-sets`
 - Beschreibung: Ruft alle öffentlichen Music Sets ab.
-- Auth: erforderlich.
+- Auth: erforderlich (Bearer Token).
 - Query-Parameter: `page`, `limit`
 - Response (200 OK):
   ```json
@@ -207,16 +233,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "id": "uuid",
         "title": "string",
         "description": "string",
-        "tracks": [
-          {
-            "id": "uuid",
-            "title": "string",
-            "artist": "string",
-            "track_order": 1,
-            "duration": 180,
-            "presigned_url": "string (15 Min gültig)"
-          }
-        ],
+        "duration": 7200,
+        "presigned_url": "/api/v1/user/music-sets/uuid/stream",
         "created_at": "time.Time"
       }
     ],
@@ -226,26 +244,33 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 #### `GET /api/v1/user/music-sets/:id`
 - Beschreibung: Ruft ein einzelnes öffentliches Music Set ab.
-- Auth: erforderlich.
+- Auth: erforderlich (Bearer Token).
 - Response (200 OK):
   ```json
   {
     "id": "uuid",
     "title": "string",
     "description": "string",
-    "tracks": [
-      {
-        "id": "uuid",
-        "title": "string",
-        "artist": "string",
-        "track_order": 1,
-        "duration": 180,
-        "presigned_url": "string (15 Min gültig)"
-      }
-    ],
+    "duration": 7200,
+    "presigned_url": "/api/v1/user/music-sets/uuid/stream",
     "created_at": "time.Time"
   }
   ```
+
+#### `GET /api/v1/user/music-sets/:id/stream`
+- Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
+- Auth: erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
+- Response: Audio-Datei Stream
+- Headers:
+  - `Content-Type: audio/mpeg` (oder anderes Audio-Format)
+  - `Accept-Ranges: bytes` (Seeking unterstützt)
+  - `Cache-Control: public, max-age=31536000` (1 Jahr Cache)
+- **Verwendung:**
+  ```html
+  <!-- Mit Query-Parameter Token -->
+  <audio src="/api/v1/user/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
+  ```
+- **Caching:** Erster Request lädt von S3 in lokalen Cache, alle folgenden Requests sind super-schnell vom lokalen SSD.
 
 ---
 
@@ -264,7 +289,12 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "title": "string",
         "description": "string",
         "visibility": "private|public",
-        "track_count": 5,
+        "has_file": true,
+        "duration": 7200,
+        "filename": "techno_set.flac",
+        "mime_type": "audio/flac",
+        "size_bytes": 500000000,
+        "presigned_url": "/api/v1/admin/music-sets/uuid/stream",
         "created_at": "time.Time",
         "updated_at": "time.Time"
       }
@@ -274,7 +304,7 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
   ```
 
 #### `GET /api/v1/admin/music-sets/:id`
-- Beschreibung: Ruft Details eines Music Sets mit allen Tracks ab.
+- Beschreibung: Ruft Details eines Music Sets ab mit Stream-URL.
 - Auth: Admin erforderlich.
 - Response (200 OK):
   ```json
@@ -283,26 +313,29 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "title": "string",
     "description": "string",
     "visibility": "private|public",
-    "tracks": [
-      {
-        "id": "uuid",
-        "title": "string",
-        "artist": "string",
-        "track_order": 1,
-        "duration": 180,
-        "filename": "track.flac",
-        "mime_type": "audio/flac",
-        "size_bytes": 50000000,
-        "created_at": "time.Time"
-      }
-    ],
+    "has_file": true,
+    "duration": 7200,
+    "filename": "techno_set.flac",
+    "mime_type": "audio/flac",
+    "size_bytes": 500000000,
+    "presigned_url": "/api/v1/admin/music-sets/uuid/stream",
     "created_at": "time.Time",
     "updated_at": "time.Time"
   }
   ```
 
+#### `GET /api/v1/admin/music-sets/:id/stream`
+- Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
+- Auth: Admin erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
+- Response: Audio-Datei Stream
+- Headers: `Accept-Ranges: bytes`, `Cache-Control: public, max-age=31536000`
+- **Verwendung:**
+  ```html
+  <audio src="/api/v1/admin/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
+  ```
+
 #### `POST /api/v1/admin/music-sets`
-- Beschreibung: Erstellt ein neues Music Set.
+- Beschreibung: Erstellt ein neues Music Set (ohne Datei).
 - Auth: Admin erforderlich.
 - Request Body:
   ```json
@@ -315,9 +348,34 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "title": "string",
     "description": "string",
     "visibility": "private",
+    "has_file": false,
     "created_at": "time.Time"
   }
   ```
+
+#### `POST /api/v1/admin/music-sets/:id/upload`
+- Beschreibung: Lädt die Audio-Datei für ein Music Set hoch (ersetzt vorhandene Datei).
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `file` (required): Audio-Datei (FLAC, MP3, WAV, AAC, M4A, OGG; max 500MB)
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "private|public",
+    "has_file": true,
+    "filename": "techno_set.flac",
+    "mime_type": "audio/flac",
+    "size_bytes": 500000000,
+    "presigned_url": "/api/v1/admin/music-sets/uuid/stream",
+    "created_at": "time.Time"
+  }
+  ```
+- **Ablauf:** Datei wird in S3 gespeichert (Backup) + lokal gecached (schneller Zugriff).
+- Hinweis: Rate Limiting - max. 30 Uploads pro Tag pro Admin.
 
 #### `PUT /api/v1/admin/music-sets/:id`
 - Beschreibung: Aktualisiert Titel und Beschreibung eines Music Sets.
@@ -344,56 +402,85 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
   ```
 
 #### `DELETE /api/v1/admin/music-sets/:id`
-- Beschreibung: Löscht ein Music Set inkl. aller Tracks und S3-Objekte.
+- Beschreibung: Löscht ein Music Set inkl. Audio-Datei aus S3 und lokalem Cache.
 - Auth: Admin erforderlich.
 - Response (200 OK):
   ```json
   { "message": "music set deleted successfully", "id": "uuid" }
   ```
 
-#### `POST /api/v1/admin/music-sets/:id/tracks`
-- Beschreibung: Lädt einen Track in ein Music Set hoch.
+#### `POST /api/v1/admin/music-sets`
+- Beschreibung: Erstellt ein neues Music Set (ohne Datei).
 - Auth: Admin erforderlich.
-- Content-Type: `multipart/form-data`
-- Felder:
-  - `file` (required): FLAC-Audiodatei
-  - `title` (optional): Track-Titel
-  - `artist` (optional): Künstlername
+- Request Body:
+  ```json
+  { "title": "string (required)", "description": "string (optional)" }
+  ```
 - Response (201 Created):
   ```json
   {
     "id": "uuid",
-    "music_set_id": "uuid",
     "title": "string",
-    "artist": "string",
-    "track_order": 1,
+    "description": "string",
+    "visibility": "private",
+    "has_file": false,
+    "created_at": "time.Time"
+  }
+  ```
+
+#### `POST /api/v1/admin/music-sets/:id/upload`
+- Beschreibung: Lädt die Audio-Datei für ein Music Set hoch (ersetzt vorhandene Datei).
+- Auth: Admin erforderlich.
+- Content-Type: `multipart/form-data`
+- Felder:
+  - `file` (required): Audio-Datei (FLAC, MP3, WAV, AAC, M4A, OGG; max 500MB)
+- Response (200 OK):
+  ```json
+  {
+    "id": "uuid",
+    "title": "string",
+    "description": "string",
+    "visibility": "private|public",
+    "has_file": true,
+    "filename": "techno_set.flac",
+    "mime_type": "audio/flac",
+    "size_bytes": 500000000,
+    "presigned_url": "string (2h gültig)",
     "created_at": "time.Time"
   }
   ```
 - Hinweis: Rate Limiting - max. 30 Uploads pro Tag pro Admin.
 
----
-
-### Track-Management (Admin)
-
-#### `PUT /api/v1/admin/tracks/:id`
-- Beschreibung: Aktualisiert Titel und Künstler eines Tracks.
+#### `PUT /api/v1/admin/music-sets/:id`
+- Beschreibung: Aktualisiert Titel und Beschreibung eines Music Sets.
 - Auth: Admin erforderlich.
 - Request Body:
   ```json
-  { "title": "string", "artist": "string" }
+  { "title": "string", "description": "string" }
   ```
 - Response (200 OK):
   ```json
-  { "message": "track updated successfully" }
+  { "message": "music set updated successfully" }
   ```
 
-#### `DELETE /api/v1/admin/tracks/:id`
-- Beschreibung: Löscht einen Track inkl. S3-Objekt.
+#### `PUT /api/v1/admin/music-sets/:id/visibility`
+- Beschreibung: Ändert die Sichtbarkeit eines Music Sets.
+- Auth: Admin erforderlich.
+- Request Body:
+  ```json
+  { "visibility": "private|public" }
+  ```
+- Response (200 OK):
+  ```json
+  { "message": "visibility updated successfully", "visibility": "public" }
+  ```
+
+#### `DELETE /api/v1/admin/music-sets/:id`
+- Beschreibung: Löscht ein Music Set inkl. Audio-Datei aus S3.
 - Auth: Admin erforderlich.
 - Response (200 OK):
   ```json
-  { "message": "track deleted successfully" }
+  { "message": "music set deleted successfully", "id": "uuid" }
   ```
 
 ---

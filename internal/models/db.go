@@ -88,9 +88,8 @@ func Migrate(db *gorm.DB) error {
 		&PhoneVerification{},
 		&PasswordReset{},
 		&Backup{},
-		&Image{},      // Image gallery model
-		&MusicSet{},   // Music set model
-		&MusicTrack{}, // Music track model
+		&Image{},    // Image gallery model
+		&MusicSet{}, // Music set model (single audio file per set)
 	)
 }
 
@@ -103,7 +102,45 @@ func runManualMigrations(db *gorm.DB) error {
 		return fmt.Errorf("failed to add PayPal support: %w", err)
 	}
 
+	// Migration: Make music_sets.asset_id nullable
+	if err := makeMusicSetAssetIDNullable(db); err != nil {
+		return fmt.Errorf("failed to make asset_id nullable: %w", err)
+	}
+
 	log.Println("Manual migrations completed successfully")
+	return nil
+}
+
+// makeMusicSetAssetIDNullable makes the asset_id column nullable in music_sets table
+func makeMusicSetAssetIDNullable(db *gorm.DB) error {
+	// Check if music_sets table exists
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*)
+		FROM information_schema.tables
+		WHERE table_name = 'music_sets'
+	`).Scan(&count).Error
+
+	if err != nil {
+		return err
+	}
+
+	// If table doesn't exist, skip (will be created by AutoMigrate)
+	if count == 0 {
+		log.Println("music_sets table doesn't exist yet, skipping nullable migration")
+		return nil
+	}
+
+	log.Println("Making music_sets.asset_id nullable...")
+
+	// Drop NOT NULL constraint from asset_id
+	sql := `ALTER TABLE music_sets ALTER COLUMN asset_id DROP NOT NULL`
+	if err := db.Exec(sql).Error; err != nil {
+		// Column might already be nullable, log but don't fail
+		log.Printf("Note: could not drop NOT NULL from asset_id (may already be nullable): %v", err)
+	}
+
+	log.Println("✅ music_sets.asset_id is now nullable")
 	return nil
 }
 

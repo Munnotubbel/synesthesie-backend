@@ -93,6 +93,9 @@ type Config struct {
 	LocalAssetsPath  string
 	MediaSyncOnStart bool
 
+	// WebP conversion
+	WebPConversionEnabled bool
+
 	// Media caching
 	MediaCacheAudio bool
 	AudioCachePath  string
@@ -137,7 +140,8 @@ type Config struct {
 	// Media upload limits
 	UploadMaxImageSize     int64 // Max image size in bytes (default: 25MB)
 	UploadMaxConcurrent    int   // Max concurrent uploads per admin (default: 3)
-	PresignedURLTTLMinutes int   // TTL for presigned URLs in minutes (default: 15)
+	PresignedURLTTLMinutes int   // TTL for image presigned URLs in minutes (default: 15)
+	AudioURLTTLMinutes     int   // TTL for audio presigned URLs in minutes (default: 120 = 2 hours)
 }
 
 func New() *Config {
@@ -226,6 +230,7 @@ func New() *Config {
 		// Local storage
 		LocalAssetsPath:  getEnv("LOCAL_ASSETS_PATH", "/data/assets"),
 		MediaSyncOnStart: getEnv("MEDIA_SYNC_ON_START", "false") == "true",
+		WebPConversionEnabled: getEnv("WEBP_CONVERSION_ENABLED", "true") == "true",
 
 		// Media caching
 		MediaCacheAudio: getEnv("MEDIA_CACHE_AUDIO", "false") == "true",
@@ -272,6 +277,7 @@ func New() *Config {
 		UploadMaxImageSize:     getEnvAsInt64("UPLOAD_MAX_IMAGE_SIZE", 25*1024*1024), // 25MB
 		UploadMaxConcurrent:    getEnvAsInt("UPLOAD_MAX_CONCURRENT", 3),
 		PresignedURLTTLMinutes: getEnvAsInt("PRESIGNED_URL_TTL_MINUTES", 15),
+		AudioURLTTLMinutes:     getEnvAsInt("AUDIO_URL_TTL_MINUTES", 120), // 2 hours default for long sets
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,16 +18,18 @@ import (
 )
 
 type MediaService struct {
-	db        *gorm.DB
-	cfg       *config.Config
-	s3Service *S3Service
+	db             *gorm.DB
+	cfg            *config.Config
+	s3Service      *S3Service
+	storageService *StorageService
 }
 
-func NewMediaService(db *gorm.DB, cfg *config.Config, s3Service *S3Service) *MediaService {
+func NewMediaService(db *gorm.DB, cfg *config.Config, s3Service *S3Service, storageService *StorageService) *MediaService {
 	return &MediaService{
-		db:        db,
-		cfg:       cfg,
-		s3Service: s3Service,
+		db:             db,
+		cfg:            cfg,
+		s3Service:      s3Service,
+		storageService: storageService,
 	}
 }
 
@@ -56,6 +60,14 @@ func (s *MediaService) UploadImage(ctx context.Context, filename string, data []
 	// Upload to S3 (mediaClient -> MediaImagesBucket)
 	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaImagesBucket, key, bytes.NewReader(data), mimeType); err != nil {
 		return nil, fmt.Errorf("failed to upload to S3: %w", err)
+	}
+
+	// Also save to local cache for fast serving
+	if s.storageService != nil {
+		if _, _, _, err := s.storageService.SaveStream(ctx, key, bytes.NewReader(data)); err != nil {
+			// Log but don't fail - S3 is the source of truth
+			fmt.Printf("Warning: failed to cache image locally: %v\n", err)
+		}
 	}
 
 	// Create Asset record
@@ -190,4 +202,111 @@ func (s *MediaService) GetAllImages(limit, offset int) ([]models.Image, int64, e
 	}
 
 	return images, total, nil
+}
+
+// GetLocalImagePath returns the local file path for an image
+// Downloads from S3 if not present locally
+// Prefers WebP version if available
+func (s *MediaService) GetLocalImagePath(ctx context.Context, key string) (string, error) {
+	localPath := filepath.Join(s.cfg.LocalAssetsPath, filepath.FromSlash(key))
+	webpPath := strings.TrimSuffix(localPath, filepath.Ext(localPath)) + ".webp"
+
+	// Check if WebP version exists (preferred)
+	if _, err := os.Stat(webpPath); err == nil {
+		return webpPath, nil
+	}
+
+	// Check if original exists locally
+	if _, err := os.Stat(localPath); err == nil {
+		return localPath, nil
+	}
+
+	// Not local - download from S3
+	if s.storageService == nil {
+		return "", fmt.Errorf("image not available locally and no storage service configured")
+	}
+
+	data, err := s.s3Service.DownloadMedia(ctx, s.cfg.MediaImagesBucket, key)
+	if err != nil {
+		return "", fmt.Errorf("failed to download from S3: %w", err)
+	}
+
+	// Save to local cache
+	absPath, _, _, err := s.storageService.SaveStream(ctx, key, bytes.NewReader(data.Bytes()))
+	if err != nil {
+		return "", fmt.Errorf("failed to cache image locally: %w", err)
+	}
+
+	return absPath, nil
+}
+
+// ConvertToWebP converts an image to WebP format using cwebp CLI tool
+// Returns the path to the WebP file, or error
+func (s *MediaService) ConvertToWebP(originalPath string) (string, error) {
+	// Skip if already WebP
+	if strings.HasSuffix(strings.ToLower(originalPath), ".webp") {
+		return originalPath, nil
+	}
+
+	// Check if WebP already exists
+	webpPath := strings.TrimSuffix(originalPath, filepath.Ext(originalPath)) + ".webp"
+	if _, err := os.Stat(webpPath); err == nil {
+		return webpPath, nil
+	}
+
+	// Use cwebp CLI tool for conversion (no CGO required)
+	// -q 90 = 90% quality
+	// -quiet = suppress output
+	cmd := exec.Command("cwebp", "-q", "90", "-quiet", originalPath, "-o", webpPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("cwebp conversion failed: %w, output: %s", err, string(output))
+	}
+
+	// Verify the file was created
+	if _, err := os.Stat(webpPath); err != nil {
+		return "", fmt.Errorf("webp file not created: %w", err)
+	}
+
+	return webpPath, nil
+}
+
+// GetPendingWebPConversions returns images that need WebP conversion
+// Returns original paths that don't have a corresponding .webp file
+func (s *MediaService) GetPendingWebPConversions() ([]string, error) {
+	imagesPath := filepath.Join(s.cfg.LocalAssetsPath, "images")
+
+	var pending []string
+	err := filepath.Walk(imagesPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+
+		ext := strings.ToLower(filepath.Ext(path))
+		// Check for convertible formats
+		if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+			webpPath := strings.TrimSuffix(path, ext) + ".webp"
+			if _, err := os.Stat(webpPath); os.IsNotExist(err) {
+				pending = append(pending, path)
+			}
+		}
+		return nil
+	})
+
+	return pending, err
+}
+
+// GetImageContentType returns the content type based on file extension
+func GetImageContentType(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".webp":
+		return "image/webp"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	default:
+		return "application/octet-stream"
+	}
 }

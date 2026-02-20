@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"log"
 	"net/http"
 	"strings"
 
@@ -15,10 +14,6 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 		origin := c.Request.Header.Get("Origin")
 		normalizedOrigin := strings.TrimRight(strings.TrimSpace(origin), "/")
 
-		// Debug logging
-		log.Printf("CORS: Request origin: %s", origin)
-		log.Printf("CORS: Allowed origins: %v", cfg.AllowedOrigins)
-
 		// Check if origin is allowed (normalized comparison)
 		allowed := false
 		for _, allowedOrigin := range cfg.AllowedOrigins {
@@ -31,19 +26,22 @@ func CORS(cfg *config.Config) gin.HandlerFunc {
 
 		// For development, if no origin matches, allow localhost origins
 		if !allowed && origin != "" && cfg.Env == "development" {
-			log.Printf("CORS: Development mode - allowing origin: %s", origin)
 			allowed = true
 		}
 
-		if allowed && normalizedOrigin != "" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", normalizedOrigin)
-		}
-
+		// Always set these headers for CORS
 		c.Writer.Header().Add("Vary", "Origin")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Max-Age", "86400") // Cache preflight for 24h
 
+		// Set allowed origin if matched
+		if allowed && normalizedOrigin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", normalizedOrigin)
+		}
+
+		// Handle OPTIONS preflight requests
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return

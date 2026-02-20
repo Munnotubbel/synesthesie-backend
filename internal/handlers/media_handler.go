@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -12,12 +13,14 @@ import (
 )
 
 type MediaHandler struct {
-	mediaService *services.MediaService
+	mediaService   *services.MediaService
+	storageService *services.StorageService
 }
 
-func NewMediaHandler(mediaService *services.MediaService) *MediaHandler {
+func NewMediaHandler(mediaService *services.MediaService, storageService *services.StorageService) *MediaHandler {
 	return &MediaHandler{
-		mediaService: mediaService,
+		mediaService:   mediaService,
+		storageService: storageService,
 	}
 }
 
@@ -174,20 +177,23 @@ func (h *MediaHandler) GetAllImages(c *gin.Context) {
 		return
 	}
 
-	// Build response without presigned URLs (admin sees metadata only)
+	// Build response with proxy URLs (faster than S3 presigned URLs)
 	imageList := make([]gin.H, len(images))
 	for i, img := range images {
+		fileURL := fmt.Sprintf("/api/v1/admin/images/%s/file", img.ID)
 		imageList[i] = gin.H{
-			"id":          img.ID,
-			"asset_id":    img.AssetID,
-			"title":       img.Title,
-			"description": img.Description,
-			"visibility":  img.Visibility,
-			"filename":    img.Asset.Filename,
-			"mime_type":   img.Asset.MimeType,
-			"size_bytes":  img.Asset.SizeBytes,
-			"created_at":  img.CreatedAt,
-			"updated_at":  img.UpdatedAt,
+			"id":            img.ID,
+			"asset_id":      img.AssetID,
+			"title":         img.Title,
+			"description":   img.Description,
+			"visibility":    img.Visibility,
+			"filename":      img.Asset.Filename,
+			"mime_type":     img.Asset.MimeType,
+			"size_bytes":    img.Asset.SizeBytes,
+			"presigned_url": fileURL, // Proxy URL for compatibility (faster than S3)
+			"file_url":      fileURL,
+			"created_at":    img.CreatedAt,
+			"updated_at":    img.UpdatedAt,
 		}
 	}
 
@@ -217,11 +223,8 @@ func (h *MediaHandler) GetImageDetails(c *gin.Context) {
 		return
 	}
 
-	// Generate presigned URL for admin preview
-	presignedURL, err := h.mediaService.GetPresignedImageURL(c.Request.Context(), image.Asset.Key)
-	if err != nil {
-		presignedURL = "" // Continue without URL if presign fails
-	}
+	// Generate proxy URL (faster than S3 presigned URL)
+	fileURL := fmt.Sprintf("/api/v1/admin/images/%s/file", image.ID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":            image.ID,
@@ -232,7 +235,7 @@ func (h *MediaHandler) GetImageDetails(c *gin.Context) {
 		"filename":      image.Asset.Filename,
 		"mime_type":     image.Asset.MimeType,
 		"size_bytes":    image.Asset.SizeBytes,
-		"presigned_url": presignedURL,
+		"presigned_url": fileURL, // Proxy URL for compatibility (faster than S3)
 		"created_at":    image.CreatedAt,
 		"updated_at":    image.UpdatedAt,
 	})
@@ -325,18 +328,15 @@ func (h *MediaHandler) GetPublicImages(c *gin.Context) {
 		return
 	}
 
-	// Build response with presigned URLs
+	// Build response with proxy URLs (faster than S3 presigned URLs)
 	imageList := make([]gin.H, len(images))
 	for i, img := range images {
-		presignedURL, err := h.mediaService.GetPresignedImageURL(c.Request.Context(), img.Asset.Key)
-		if err != nil {
-			presignedURL = ""
-		}
+		fileURL := fmt.Sprintf("/api/v1/user/images/%s/file", img.ID)
 		imageList[i] = gin.H{
 			"id":            img.ID,
 			"title":         img.Title,
 			"description":   img.Description,
-			"presigned_url": presignedURL,
+			"presigned_url": fileURL, // Proxy URL for compatibility (faster than S3)
 			"created_at":    img.CreatedAt,
 		}
 	}
@@ -373,18 +373,88 @@ func (h *MediaHandler) GetPublicImage(c *gin.Context) {
 		return
 	}
 
-	// Generate presigned URL
-	presignedURL, err := h.mediaService.GetPresignedImageURL(c.Request.Context(), image.Asset.Key)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate URL"})
-		return
-	}
+	// Generate proxy URL (faster than S3 presigned URL)
+	fileURL := fmt.Sprintf("/api/v1/user/images/%s/file", image.ID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":            image.ID,
 		"title":         image.Title,
 		"description":   image.Description,
-		"presigned_url": presignedURL,
+		"presigned_url": fileURL, // Proxy URL for compatibility (faster than S3)
 		"created_at":    image.CreatedAt,
 	})
+}
+
+// ServeImageFile serves the actual image file from local cache
+// GET /user/images/:id/file
+// This endpoint is faster than presigned URLs because it serves from local disk
+// Prefers WebP version if available (auto-converted by background worker)
+func (h *MediaHandler) ServeImageFile(c *gin.Context) {
+	imageIDStr := c.Param("id")
+	imageID, err := uuid.Parse(imageIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image ID"})
+		return
+	}
+
+	image, err := h.mediaService.GetImageByID(imageID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
+		return
+	}
+
+	// Check visibility - only public images can be served
+	if image.Visibility != "public" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
+		return
+	}
+
+	// Get local file path (downloads from S3 if not present, prefers WebP)
+	localPath, err := h.mediaService.GetLocalImagePath(c.Request.Context(), image.Asset.Key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve image"})
+		return
+	}
+
+	// Determine content type based on actual file (may be WebP)
+	contentType := services.GetImageContentType(localPath)
+
+	// Set content type and serve file
+	c.Header("Content-Type", contentType)
+	c.Header("Cache-Control", "public, max-age=31536000") // Cache for 1 year
+	c.Header("Content-Disposition", "inline; filename=\""+image.Asset.Filename+"\"")
+	c.File(localPath)
+}
+
+// ServeImageFileAdmin serves any image file for admin (including private)
+// GET /admin/images/:id/file
+func (h *MediaHandler) ServeImageFileAdmin(c *gin.Context) {
+	imageIDStr := c.Param("id")
+	imageID, err := uuid.Parse(imageIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image ID"})
+		return
+	}
+
+	image, err := h.mediaService.GetImageByID(imageID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
+		return
+	}
+
+	// Get local file path (downloads from S3 if not present, prefers WebP)
+	localPath, err := h.mediaService.GetLocalImagePath(c.Request.Context(), image.Asset.Key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve image"})
+		return
+	}
+
+	// Determine content type based on actual file (may be WebP)
+	contentType := services.GetImageContentType(localPath)
+
+	// Set content type and serve file
+	c.Header("Content-Type", contentType)
+	c.Header("Cache-Control", "private, max-age=3600") // Cache for 1 hour (admin)
+	c.Header("Content-Disposition", "inline; filename=\""+image.Asset.Filename+"\"")
+	c.File(localPath)
 }

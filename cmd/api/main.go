@@ -62,8 +62,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to init S3 service: %v", err)
 	}
-	mediaService := services.NewMediaService(db, cfg, s3Service)
-	musicService := services.NewMusicService(db, cfg, s3Service)
+	mediaService := services.NewMediaService(db, cfg, s3Service, storageService)
+	musicService := services.NewMusicService(db, cfg, s3Service, storageService)
+	audioCacheService := services.NewAudioCacheService(cfg, s3Service)
 	qrService := services.NewQRService(cfg)
 	backupService := services.NewBackupService(db, cfg, s3Service)
 	auditService := services.NewAuditService(db, emailService, cfg)
@@ -92,6 +93,37 @@ func main() {
 				}
 			}
 			log.Println("MediaSyncOnStart: image sync complete")
+		}()
+	}
+
+	// Start background WebP conversion worker
+	if cfg.WebPConversionEnabled {
+		go func() {
+			// Initial delay to let the server start first
+			time.Sleep(30 * time.Second)
+			for {
+				pending, err := mediaService.GetPendingWebPConversions()
+				if err != nil {
+					log.Printf("WebP conversion scan error: %v", err)
+				} else if len(pending) > 0 {
+					log.Printf("WebP conversion: found %d images to convert", len(pending))
+					converted := 0
+					for _, originalPath := range pending {
+						webpPath, err := mediaService.ConvertToWebP(originalPath)
+						if err != nil {
+							log.Printf("WebP conversion error for %s: %v", originalPath, err)
+						} else {
+							converted++
+							log.Printf("WebP converted: %s -> %s", filepath.Base(originalPath), filepath.Base(webpPath))
+						}
+						// Small delay between conversions to not overload CPU
+						time.Sleep(100 * time.Millisecond)
+					}
+					log.Printf("WebP conversion batch complete: %d/%d converted", converted, len(pending))
+				}
+				// Check every 5 minutes for new images to convert
+				time.Sleep(5 * time.Minute)
+			}
 		}()
 	}
 
@@ -192,8 +224,8 @@ func main() {
 	publicHandler := handlers.NewPublicHandler(eventService, inviteService, cfg)
 	stripeHandler := handlers.NewStripeHandler(ticketService, cfg, emailService)
 	paypalHandler := handlers.NewPayPalHandler(ticketService, emailService, cfg)
-	mediaHandler := handlers.NewMediaHandler(mediaService)
-	musicHandler := handlers.NewMusicHandler(musicService)
+	mediaHandler := handlers.NewMediaHandler(mediaService, storageService)
+	musicHandler := handlers.NewMusicHandler(musicService, storageService, audioCacheService)
 
 	// Health check outside API group (no /api/v1 prefix)
 	router.GET("/health", func(c *gin.Context) {
@@ -206,6 +238,12 @@ func main() {
 		// Health check also available under /api/v1/health for compatibility
 		api.GET("/health", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+		})
+
+		// Catch-all OPTIONS handler for CORS preflight requests
+		// This ensures all OPTIONS requests get a proper CORS response
+		api.OPTIONS("/*path", func(c *gin.Context) {
+			c.Status(http.StatusNoContent)
 		})
 
 		// Public routes
@@ -251,10 +289,20 @@ func main() {
 			// Image gallery
 			user.GET("/images", mediaHandler.GetPublicImages)
 			user.GET("/images/:id", mediaHandler.GetPublicImage)
+			user.GET("/images/:id/file", mediaHandler.ServeImageFile) // Fast local cache serving
 
 			// Music sets
 			user.GET("/music-sets", musicHandler.GetPublicMusicSets)
 			user.GET("/music-sets/:id", musicHandler.GetPublicMusicSet)
+		}
+
+		// Audio stream endpoints with token query param support (outside user group for <audio> compatibility)
+		// These accept both Authorization header AND ?token=xxx query parameter
+		userStream := api.Group("/user/music-sets")
+		userStream.Use(handlers.TokenFromQueryMiddleware())
+		userStream.Use(middleware.Auth(authService))
+		{
+			userStream.GET("/:id/stream", musicHandler.StreamMusicSetUser)
 		}
 
 		// Admin routes
@@ -330,6 +378,7 @@ func main() {
 			// Image gallery management (read operations)
 			admin.GET("/images", mediaHandler.GetAllImages)
 			admin.GET("/images/:id", mediaHandler.GetImageDetails)
+			admin.GET("/images/:id/file", mediaHandler.ServeImageFileAdmin) // Fast local cache serving
 			admin.DELETE("/images/:id", mediaHandler.DeleteImage)
 			admin.PUT("/images/:id/visibility", mediaHandler.UpdateImageVisibility)
 			admin.PUT("/images/:id/metadata", mediaHandler.UpdateImageMetadata)
@@ -353,11 +402,19 @@ func main() {
 			admin.PUT("/music-sets/:id", musicHandler.UpdateMusicSetMetadata)
 			admin.DELETE("/music-sets/:id", musicHandler.DeleteMusicSet)
 			admin.PUT("/music-sets/:id/visibility", musicHandler.UpdateMusicSetVisibility)
-			admin.POST("/music-sets/:id/tracks", musicHandler.UploadTrack)
 
-			// Track management
-			admin.DELETE("/tracks/:id", musicHandler.DeleteTrack)
-			admin.PUT("/tracks/:id", musicHandler.UpdateTrackMetadata)
+			// Music upload (with rate limiting)
+			uploadGroup.POST("/music-sets/:id/upload", musicHandler.UploadMusicSetFile)
+		}
+
+		// Audio stream endpoints with token query param support (outside admin group for <audio> compatibility)
+		// These accept both Authorization header AND ?token=xxx query parameter
+		adminStream := api.Group("/admin/music-sets")
+		adminStream.Use(handlers.TokenFromQueryMiddleware())
+		adminStream.Use(middleware.Auth(authService))
+		adminStream.Use(middleware.AdminOnly())
+		{
+			adminStream.GET("/:id/stream", musicHandler.StreamMusicSetAdmin)
 		}
 
 		// Payment webhooks
@@ -369,8 +426,8 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  120 * time.Second,  // 2 min for large audio uploads
+		WriteTimeout: 120 * time.Second,  // 2 min for large responses
 		IdleTimeout:  60 * time.Second,
 	}
 
