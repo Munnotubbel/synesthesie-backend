@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"strconv"
@@ -432,22 +433,37 @@ func (h *MediaHandler) ServeImageFileAdmin(c *gin.Context) {
 	imageIDStr := c.Param("id")
 	imageID, err := uuid.Parse(imageIDStr)
 	if err != nil {
+		log.Printf("[ImageAdmin] Invalid image ID: %s", imageIDStr)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid image ID"})
 		return
 	}
 
+	log.Printf("[ImageAdmin] Loading image %s", imageID)
 	image, err := h.mediaService.GetImageByID(imageID)
 	if err != nil {
+		log.Printf("[ImageAdmin] Image not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "image not found"})
 		return
 	}
 
+	// Check if asset exists
+	if image.Asset == nil {
+		log.Printf("[ImageAdmin] Image %s has no asset", imageID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "image has no file"})
+		return
+	}
+
+	log.Printf("[ImageAdmin] Image %s has asset: key=%s", imageID, image.Asset.Key)
+
 	// Get local file path (downloads from S3 if not present, prefers WebP)
 	localPath, err := h.mediaService.GetLocalImagePath(c.Request.Context(), image.Asset.Key)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve image"})
+		log.Printf("[ImageAdmin] Failed to get local path for %s: %v", image.Asset.Key, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve image: " + err.Error()})
 		return
 	}
+
+	log.Printf("[ImageAdmin] Serving image %s from: %s", imageID, localPath)
 
 	// Determine content type based on actual file (may be WebP)
 	contentType := services.GetImageContentType(localPath)

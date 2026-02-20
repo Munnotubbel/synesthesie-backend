@@ -22,12 +22,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o 
 # Runtime stage
 FROM alpine:3.19
 
-# Install runtime dependencies (including cwebp for image conversion)
-RUN apk add --no-cache ca-certificates tzdata libwebp-tools
+# Install runtime dependencies (including cwebp for image conversion and ffmpeg for HLS/audio)
+RUN apk add --no-cache ca-certificates tzdata libwebp-tools ffmpeg
 
 # Create non-root user
 RUN addgroup -g 1000 -S synesthesie && \
-    adduser -u 1000 -S synesthesie -G synesthesie
+  adduser -u 1000 -S synesthesie -G synesthesie
 
 # Set working directory
 WORKDIR /app

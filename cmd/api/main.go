@@ -303,6 +303,7 @@ func main() {
 		userStream.Use(middleware.Auth(authService))
 		{
 			userStream.GET("/:id/stream", musicHandler.StreamMusicSetUser)
+			userStream.GET("/:id/stream/*filepath", musicHandler.StreamMusicSetUser)
 		}
 
 		// Admin routes
@@ -415,6 +416,7 @@ func main() {
 		adminStream.Use(middleware.AdminOnly())
 		{
 			adminStream.GET("/:id/stream", musicHandler.StreamMusicSetAdmin)
+			adminStream.GET("/:id/stream/*filepath", musicHandler.StreamMusicSetAdmin)
 		}
 
 		// Payment webhooks
@@ -426,8 +428,8 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
-		ReadTimeout:  120 * time.Second,  // 2 min for large audio uploads
-		WriteTimeout: 120 * time.Second,  // 2 min for large responses
+		ReadTimeout:  120 * time.Second, // 2 min for large audio uploads
+		WriteTimeout: 120 * time.Second, // 2 min for large responses
 		IdleTimeout:  60 * time.Second,
 	}
 

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log"
@@ -193,14 +192,16 @@ func (h *MusicHandler) GetAllMusicSets(c *gin.Context) {
 	setList := make([]gin.H, len(sets))
 	for i, set := range sets {
 		setData := gin.H{
-			"id":          set.ID,
-			"title":       set.Title,
-			"description": set.Description,
-			"visibility":  set.Visibility,
-			"has_file":    set.AssetID != nil,
-			"duration":    set.Duration,
-			"created_at":  set.CreatedAt,
-			"updated_at":  set.UpdatedAt,
+			"id":             set.ID,
+			"title":          set.Title,
+			"description":    set.Description,
+			"visibility":     set.Visibility,
+			"has_file":       set.AssetID != nil,
+			"duration":       set.Duration,
+			"play_count":     set.PlayCount,
+			"download_count": set.DownloadCount,
+			"created_at":     set.CreatedAt,
+			"updated_at":     set.UpdatedAt,
 		}
 		if set.Asset != nil {
 			setData["filename"] = set.Asset.Filename
@@ -243,15 +244,17 @@ func (h *MusicHandler) GetMusicSetDetails(c *gin.Context) {
 	}
 
 	response := gin.H{
-		"id":            musicSet.ID,
-		"title":         musicSet.Title,
-		"description":   musicSet.Description,
-		"visibility":    musicSet.Visibility,
-		"has_file":      musicSet.AssetID != nil,
-		"duration":      musicSet.Duration,
-		"presigned_url": streamURL, // S3 presigned URL
-		"created_at":    musicSet.CreatedAt,
-		"updated_at":    musicSet.UpdatedAt,
+		"id":             musicSet.ID,
+		"title":          musicSet.Title,
+		"description":    musicSet.Description,
+		"visibility":     musicSet.Visibility,
+		"has_file":       musicSet.AssetID != nil,
+		"duration":       musicSet.Duration,
+		"play_count":     musicSet.PlayCount,
+		"download_count": musicSet.DownloadCount,
+		"presigned_url":  streamURL, // S3 presigned URL
+		"created_at":     musicSet.CreatedAt,
+		"updated_at":     musicSet.UpdatedAt,
 	}
 
 	if musicSet.Asset != nil {
@@ -365,12 +368,14 @@ func (h *MusicHandler) GetPublicMusicSets(c *gin.Context) {
 			streamURL = h.getStreamURL(set.ID, false)
 		}
 		setList[i] = gin.H{
-			"id":            set.ID,
-			"title":         set.Title,
-			"description":   set.Description,
-			"duration":      set.Duration,
-			"presigned_url": streamURL, // S3 presigned URL
-			"created_at":    set.CreatedAt,
+			"id":             set.ID,
+			"title":          set.Title,
+			"description":    set.Description,
+			"duration":       set.Duration,
+			"play_count":     set.PlayCount,
+			"download_count": set.DownloadCount,
+			"presigned_url":  streamURL, // Proxy stream URL
+			"created_at":     set.CreatedAt,
 		}
 	}
 
@@ -413,12 +418,14 @@ func (h *MusicHandler) GetPublicMusicSet(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"id":            musicSet.ID,
-		"title":         musicSet.Title,
-		"description":   musicSet.Description,
-		"duration":      musicSet.Duration,
-		"presigned_url": streamURL, // S3 presigned URL
-		"created_at":    musicSet.CreatedAt,
+		"id":             musicSet.ID,
+		"title":          musicSet.Title,
+		"description":    musicSet.Description,
+		"duration":       musicSet.Duration,
+		"play_count":     musicSet.PlayCount,
+		"download_count": musicSet.DownloadCount,
+		"presigned_url":  streamURL, // Proxy stream URL
+		"created_at":     musicSet.CreatedAt,
 	})
 }
 
@@ -436,6 +443,8 @@ func (h *MusicHandler) StreamMusicSetUser(c *gin.Context) {
 
 // streamMusicSet handles the actual streaming with local caching
 // Auth is ALWAYS checked (secure), files are cached locally for speed
+// Query params:
+//   - download=true: Track as download (increments download_count), sets Content-Disposition to attachment
 func (h *MusicHandler) streamMusicSet(c *gin.Context, checkVisibility bool) {
 	setIDStr := c.Param("id")
 	setID, err := uuid.Parse(setIDStr)
@@ -483,31 +492,95 @@ func (h *MusicHandler) streamMusicSet(c *gin.Context, checkVisibility bool) {
 		contentType = audioMimeTypeFromExt(ext)
 	}
 
-	// Set headers for audio streaming
-	c.Header("Content-Type", contentType)
-	c.Header("Accept-Ranges", "bytes")
-	c.Header("Cache-Control", "public, max-age=31536000") // 1 year cache
-	c.Header("Content-Disposition", "inline; filename=\""+musicSet.Asset.Filename+"\"")
+	// Check if this is a download request
+	isDownload := c.Query("download") == "true"
 
-	localPath := h.audioCacheService.GetLocalPath(musicSet.Asset.Key)
-	log.Printf("[Stream] Local path for %s: %s", musicSet.Asset.Key, localPath)
+	// Track play/download count (only on initial request, not Range requests for seeking)
+	rangeHeader := c.GetHeader("Range")
+	if rangeHeader == "" || rangeHeader == "bytes=0-" {
+		if isDownload {
+			// Increment download count
+			go func() {
+				if err := h.musicService.IncrementDownloadCount(setID); err != nil {
+					log.Printf("[Stream] Failed to increment download count: %v", err)
+				}
+			}()
+		} else {
+			// Increment play count
+			go func() {
+				if err := h.musicService.IncrementPlayCount(setID); err != nil {
+					log.Printf("[Stream] Failed to increment play count: %v", err)
+				}
+			}()
+		}
+	}
 
-	// Fast path: serve from local cache (Range-aware, handles seek for waveform)
-	if h.audioCacheService.IsCached(musicSet.Asset.Key) {
-		log.Printf("[Stream] Serving from cache: %s", localPath)
-		http.ServeFile(c.Writer, c.Request, localPath)
+	// If it's a download request, serve the original source asset instead of HLS chunks
+	if isDownload {
+		if musicSet.SourceAsset == nil {
+			log.Printf("[Stream] Download requested but no source asset found for set %s", setID)
+			c.JSON(http.StatusNotFound, gin.H{"error": "original file not available for download"})
+			return
+		}
+
+		targetS3Key := musicSet.SourceAsset.Key
+
+		c.Header("Content-Type", musicSet.SourceAsset.MimeType)
+		c.Header("Content-Disposition", "attachment; filename=\""+musicSet.SourceAsset.Filename+"\"")
+		c.Header("Accept-Ranges", "bytes")
+
+		s3Stream, err := h.audioCacheService.StreamFromS3(c.Request.Context(), targetS3Key)
+		if err != nil {
+			log.Printf("[Stream] ERROR streaming download %s from S3: %v", targetS3Key, err)
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		defer s3Stream.Close()
+
+		c.Writer.WriteHeader(http.StatusOK)
+		io.Copy(c.Writer, s3Stream) //nolint:errcheck
 		return
 	}
 
-	// Cache miss: stream directly from S3 (no blocking download).
-	// Simultaneously kick off a background download so future requests use the cache.
-	log.Printf("[Stream] Cache miss — proxying from S3, warming cache in background: %s", musicSet.Asset.Key)
-	h.audioCacheService.StartBackgroundDownload(context.Background(), musicSet.Asset.Key)
+	filepathParam := c.Param("filepath")
+	filename := "master.m3u8" // Default to master playlist if no generic suffix is provided
+	if filepathParam != "" && filepathParam != "/" {
+		filename = strings.TrimPrefix(filepathParam, "/")
+	}
 
-	s3Stream, streamErr := h.audioCacheService.StreamFromS3(c.Request.Context(), musicSet.Asset.Key)
-	if streamErr != nil {
-		log.Printf("[Stream] ERROR streaming from S3: %v", streamErr)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "audio unavailable: " + streamErr.Error()})
+	// For HLS, the asset Key is the path to the master.m3u8 (e.g. music/uuid/master.m3u8)
+	// We need to extract the base prefix (music/uuid) and append the requested filename.
+	baseS3Key := filepath.Dir(musicSet.Asset.Key)
+	targetS3Key := fmt.Sprintf("%s/%s", baseS3Key, filename)
+
+	log.Printf("[Stream] HLS requested: %s -> target S3 key: %s", filename, targetS3Key)
+
+	// Set appropriate Content-Type for HLS
+	contentType = "application/octet-stream"
+	if strings.HasSuffix(filename, ".m3u8") {
+		contentType = "application/vnd.apple.mpegurl"
+	} else if strings.HasSuffix(filename, ".ts") {
+		contentType = "video/MP2T"
+	}
+
+	c.Header("Content-Type", contentType)
+	c.Header("Accept-Ranges", "bytes")
+
+	// Cache headers: chunks are immutable (1 year), playlists can change but ours are static VOD
+	if strings.HasSuffix(filename, ".ts") {
+		c.Header("Cache-Control", "public, max-age=31536000") // 1 year cache for chunks
+	} else {
+		// m3u8 can technically change in live streams, but ours is VOD.
+		// Still, standard practice is short cache for m3u8.
+		c.Header("Cache-Control", "public, max-age=3600")
+	}
+
+	// We stream chunks directly from S3 without local caching.
+	// HLS chunks are small and fast to stream via io.Copy.
+	s3Stream, err := h.audioCacheService.StreamFromS3(c.Request.Context(), targetS3Key)
+	if err != nil {
+		log.Printf("[Stream] ERROR streaming %s from S3: %v", targetS3Key, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "segment not found"})
 		return
 	}
 	defer s3Stream.Close()

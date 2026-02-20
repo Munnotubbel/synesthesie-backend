@@ -51,7 +51,7 @@ func buildClient(endpoint, region, key, secret string, pathStyle bool) (*s3.Clie
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(key, secret, "")),
 		resolver,
-		awsconfig.WithLogger(logging.NewStandardLogger(nil)),
+		awsconfig.WithLogger(logging.NewStandardLogger(os.Stderr)),
 	)
 	if err != nil {
 		return nil, err

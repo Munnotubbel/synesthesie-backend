@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/synesthesie/backend/internal/config"
 	"github.com/synesthesie/backend/internal/models"
+	"github.com/synesthesie/backend/internal/pkg/audio"
 	"gorm.io/gorm"
 )
 
@@ -75,60 +77,117 @@ func (s *MusicService) UploadMusicSetFile(ctx context.Context, setID uuid.UUID, 
 		return nil, fmt.Errorf("unsupported audio format: %s (allowed: flac, mp3, wav, aac, m4a, ogg)", ext)
 	}
 
-	// Detect MIME type: always prefer extension (content sniffing misidentifies FLAC as audio/mpeg)
+	// Process Audio via FFmpeg (Duration, Peaks, HLS Files)
+	log.Printf("[Upload] Processing audio file %s for HLS and Peaks...", filename)
+	result, err := audio.ProcessAudio(ctx, data, ext)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process audio: %w", err)
+	}
+
+	// Detect MIME type for the original file, though now we only care about the HLS files
 	mimeType := getMimeTypeFromExtension(ext)
 	if mimeType == "application/octet-stream" {
-		// Extension unknown — try content sniffing
 		sniffed := http.DetectContentType(data)
 		if strings.HasPrefix(sniffed, "audio/") {
 			mimeType = sniffed
 		}
 	}
 
-	// Generate S3 key
-	key := fmt.Sprintf("music/%s%s", uuid.New().String(), ext)
+	// A unique directory prefix for this set's HLS files
+	baseKey := fmt.Sprintf("music/%s", uuid.New().String())
 
-	// Upload to S3 (audio bucket)
-	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, key, data, mimeType); err != nil {
-		return nil, fmt.Errorf("failed to upload to S3: %w", err)
+	// Upload all generated HLS files to S3 under the baseKey
+	log.Printf("[Upload] Uploading %d HLS segments to S3...", len(result.HLSFiles))
+	for name, fileData := range result.HLSFiles {
+		hlsKey := fmt.Sprintf("%s/%s", baseKey, name)
+
+		contentType := "application/octet-stream"
+		if strings.HasSuffix(name, ".m3u8") {
+			contentType = "application/vnd.apple.mpegurl"
+		} else if strings.HasSuffix(name, ".ts") {
+			contentType = "video/MP2T"
+		}
+
+		if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, hlsKey, fileData, contentType); err != nil {
+			return nil, fmt.Errorf("failed to upload HLS segment %s to S3: %w", name, err)
+		}
 	}
 
-	// If set already has an asset, delete the old one
+	// Delete old asset if it exists
 	if musicSet.AssetID != nil {
 		var oldAsset models.Asset
 		if err := s.db.First(&oldAsset, "id = ?", *musicSet.AssetID).Error; err == nil {
-			// Delete old S3 object
+			// Extract old base key (e.g., from "music/uuid/master.m3u8" to "music/uuid")
+			// We ideally want to list and delete all files in that prefix, but for now
+			// we at least try to delete the exact key logged. If it was a raw file, this deletes it.
+			// HLS directories will need prefix deletion, but S3Service.DeleteMedia only takes exact keys right now.
+
+			// Try deleting old asset key
 			_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, oldAsset.Key)
+
 			// Delete old asset record
 			s.db.Delete(&oldAsset)
 		}
 	}
 
-	// Create Asset record
+	// Create Asset record for the master.m3u8
+	masterKey := fmt.Sprintf("%s/master.m3u8", baseKey)
 	asset := &models.Asset{
-		Key:        key,
-		Filename:   filename,
+		Key:        masterKey,
+		Filename:   "master.m3u8",
+		MimeType:   "application/vnd.apple.mpegurl",
+		SizeBytes:  int64(len(result.HLSFiles["master.m3u8"])), // Just the playlist size
+		Visibility: models.AssetVisibilityPrivate,
+	}
+	if err := s.db.Create(asset).Error; err != nil {
+		// Attempt cleanup on DB failure (not exhaustive prefix deletion, but best effort)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
+		return nil, fmt.Errorf("failed to create asset record: %w", err)
+	}
+
+	// Upload original source file for downloads (SourceAsset)
+	sourceKey := fmt.Sprintf("%s/source%s", baseKey, ext)
+	log.Printf("[Upload] Uploading original source file for downloads: %s", sourceKey)
+	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, sourceKey, data, mimeType); err != nil {
+		// Cleanup the previously created HLS asset record
+		s.db.Delete(asset)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
+		return nil, fmt.Errorf("failed to upload original source file: %w", err)
+	}
+
+	// Create Asset record for the original source file
+	sourceAsset := &models.Asset{
+		Key:        sourceKey,
+		Filename:   filename, // Use the user's original filename (e.g., "05 Let It Go.flac")
 		MimeType:   mimeType,
 		SizeBytes:  int64(len(data)),
 		Visibility: models.AssetVisibilityPrivate,
 	}
-	if err := s.db.Create(asset).Error; err != nil {
-		// Attempt S3 cleanup on DB failure (SEC-04)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
-		return nil, fmt.Errorf("failed to create asset record: %w", err)
+	if err := s.db.Create(sourceAsset).Error; err != nil {
+		s.db.Delete(asset)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, sourceKey)
+		return nil, fmt.Errorf("failed to create source asset record: %w", err)
 	}
 
-	// Update music set with asset ID
+	// Update music set with asset ID, source asset ID, duration, and peak data
 	musicSet.AssetID = &asset.ID
+	musicSet.SourceAssetID = &sourceAsset.ID
+	musicSet.Duration = result.Duration
+	musicSet.PeakData = result.PeakData
+
 	if err := s.db.Save(&musicSet).Error; err != nil {
 		// Cleanup
 		s.db.Delete(asset)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, key)
+		s.db.Delete(sourceAsset)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
+		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, sourceKey)
 		return nil, fmt.Errorf("failed to update music set: %w", err)
 	}
 
-	// Load asset relation
+	// Load asset relations
 	musicSet.Asset = asset
+	musicSet.SourceAsset = sourceAsset
 
 	return &musicSet, nil
 }
@@ -162,7 +221,7 @@ func (s *MusicService) GetAllMusicSets(limit, offset int) ([]models.MusicSet, in
 		return nil, 0, err
 	}
 
-	if err := s.db.Preload("Asset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
+	if err := s.db.Preload("Asset").Preload("SourceAsset").Order("created_at DESC").Limit(limit).Offset(offset).Find(&sets).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -172,7 +231,7 @@ func (s *MusicService) GetAllMusicSets(limit, offset int) ([]models.MusicSet, in
 // GetMusicSetByID returns a single music set
 func (s *MusicService) GetMusicSetByID(setID uuid.UUID) (*models.MusicSet, error) {
 	var musicSet models.MusicSet
-	if err := s.db.Preload("Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
+	if err := s.db.Preload("Asset").Preload("SourceAsset").First(&musicSet, "id = ?", setID).Error; err != nil {
 		return nil, err
 	}
 	return &musicSet, nil
@@ -182,22 +241,36 @@ func (s *MusicService) GetMusicSetByID(setID uuid.UUID) (*models.MusicSet, error
 // Follows SEC-04: Delete S3 objects first, then DB records
 func (s *MusicService) DeleteMusicSet(ctx context.Context, setID uuid.UUID) error {
 	var musicSet models.MusicSet
-	if err := s.db.Preload("Asset").First(&musicSet, "id = ?", setID).Error; err != nil {
+	if err := s.db.Preload("Asset").Preload("SourceAsset").First(&musicSet, "id = ?", setID).Error; err != nil {
 		return fmt.Errorf("music set not found: %w", err)
 	}
 
 	// Delete S3 object FIRST (SEC-04)
 	if musicSet.Asset != nil {
 		if err := s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, musicSet.Asset.Key); err != nil {
-			// Log but continue - S3 might already be gone
+			log.Printf("[DeleteMusic] Warning: failed to delete S3 asset %s: %v", musicSet.Asset.Key, err)
+			// Continue with deletion even if S3 fails (orphaned file is better than broken state)
 		}
-		// Delete asset record
-		s.db.Delete(musicSet.Asset)
 	}
 
-	// Delete the music set
+	if musicSet.SourceAsset != nil {
+		if err := s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, musicSet.SourceAsset.Key); err != nil {
+			log.Printf("[DeleteMusic] Warning: failed to delete S3 source asset %s: %v", musicSet.SourceAsset.Key, err)
+		}
+	}
+
+	// Delete DB record
+	// Note: GORM handles deleting the Asset records due to foreign key constraints if set up,
+	// but explicitly deleting the Asset records is safer since we use pointer relations.
 	if err := s.db.Delete(&musicSet).Error; err != nil {
-		return fmt.Errorf("failed to delete music set: %w", err)
+		return fmt.Errorf("failed to delete music set from db: %w", err)
+	}
+
+	if musicSet.AssetID != nil {
+		s.db.Delete(&models.Asset{}, *musicSet.AssetID)
+	}
+	if musicSet.SourceAssetID != nil {
+		s.db.Delete(&models.Asset{}, *musicSet.SourceAssetID)
 	}
 
 	return nil
@@ -291,4 +364,20 @@ func (s *MusicService) GetLocalMusicPathIfExists(key string) string {
 		return localPath
 	}
 	return ""
+}
+
+// IncrementPlayCount increments the play count for a music set
+// Called when a user starts playing a track
+func (s *MusicService) IncrementPlayCount(setID uuid.UUID) error {
+	return s.db.Model(&models.MusicSet{}).
+		Where("id = ?", setID).
+		UpdateColumn("play_count", gorm.Expr("play_count + 1")).Error
+}
+
+// IncrementDownloadCount increments the download count for a music set
+// Called when a user downloads a track (via ?download=true parameter)
+func (s *MusicService) IncrementDownloadCount(setID uuid.UUID) error {
+	return s.db.Model(&models.MusicSet{}).
+		Where("id = ?", setID).
+		UpdateColumn("download_count", gorm.Expr("download_count + 1")).Error
 }

@@ -234,6 +234,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "title": "string",
         "description": "string",
         "duration": 7200,
+        "play_count": 42,
+        "download_count": 5,
         "presigned_url": "/api/v1/user/music-sets/uuid/stream",
         "created_at": "time.Time"
       }
@@ -252,6 +254,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "title": "string",
     "description": "string",
     "duration": 7200,
+    "play_count": 42,
+    "download_count": 5,
     "presigned_url": "/api/v1/user/music-sets/uuid/stream",
     "created_at": "time.Time"
   }
@@ -260,6 +264,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 #### `GET /api/v1/user/music-sets/:id/stream`
 - Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
 - Auth: erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
+- Query-Parameter:
+  - `download=true` (optional): Trackt als Download, setzt `Content-Disposition: attachment`
 - Response: Audio-Datei Stream
 - Headers:
   - `Content-Type: audio/mpeg` (oder anderes Audio-Format)
@@ -267,10 +273,16 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
   - `Cache-Control: public, max-age=31536000` (1 Jahr Cache)
 - **Verwendung:**
   ```html
-  <!-- Mit Query-Parameter Token -->
+  <!-- Stream (zählt als Play) -->
   <audio src="/api/v1/user/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
+
+  <!-- Download (zählt als Download) -->
+  <a href="/api/v1/user/music-sets/uuid/stream?token=YOUR_JWT_TOKEN&download=true">Download</a>
   ```
-- **Caching:** Erster Request lädt von S3 in lokalen Cache, alle folgenden Requests sind super-schnell vom lokalen SSD.
+- **Caching-Verhalten:**
+  - **Cache-Hit:** Sofortiges Streaming vom lokalen SSD-Cache (schnell!)
+  - **Cache-Miss:** Proxy-Streaming direkt von S3 + Background-Download für zukünftige Requests
+  - Erster Request ist etwas langsamer (S3), alle folgenden sind super-schnell vom lokalen Cache
 
 ---
 
@@ -291,6 +303,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
         "visibility": "private|public",
         "has_file": true,
         "duration": 7200,
+        "play_count": 42,
+        "download_count": 5,
         "filename": "techno_set.flac",
         "mime_type": "audio/flac",
         "size_bytes": 500000000,
@@ -315,6 +329,8 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "visibility": "private|public",
     "has_file": true,
     "duration": 7200,
+    "play_count": 42,
+    "download_count": 5,
     "filename": "techno_set.flac",
     "mime_type": "audio/flac",
     "size_bytes": 500000000,
@@ -327,12 +343,17 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 #### `GET /api/v1/admin/music-sets/:id/stream`
 - Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
 - Auth: Admin erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
+- Query-Parameter:
+  - `download=true` (optional): Trackt als Download, setzt `Content-Disposition: attachment`
 - Response: Audio-Datei Stream
 - Headers: `Accept-Ranges: bytes`, `Cache-Control: public, max-age=31536000`
 - **Verwendung:**
   ```html
   <audio src="/api/v1/admin/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
   ```
+- **Caching-Verhalten:**
+  - **Cache-Hit:** Sofortiges Streaming vom lokalen SSD-Cache (schnell!)
+  - **Cache-Miss:** Proxy-Streaming direkt von S3 + Background-Download für zukünftige Requests
 
 #### `POST /api/v1/admin/music-sets`
 - Beschreibung: Erstellt ein neues Music Set (ohne Datei).
@@ -403,80 +424,6 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
 
 #### `DELETE /api/v1/admin/music-sets/:id`
 - Beschreibung: Löscht ein Music Set inkl. Audio-Datei aus S3 und lokalem Cache.
-- Auth: Admin erforderlich.
-- Response (200 OK):
-  ```json
-  { "message": "music set deleted successfully", "id": "uuid" }
-  ```
-
-#### `POST /api/v1/admin/music-sets`
-- Beschreibung: Erstellt ein neues Music Set (ohne Datei).
-- Auth: Admin erforderlich.
-- Request Body:
-  ```json
-  { "title": "string (required)", "description": "string (optional)" }
-  ```
-- Response (201 Created):
-  ```json
-  {
-    "id": "uuid",
-    "title": "string",
-    "description": "string",
-    "visibility": "private",
-    "has_file": false,
-    "created_at": "time.Time"
-  }
-  ```
-
-#### `POST /api/v1/admin/music-sets/:id/upload`
-- Beschreibung: Lädt die Audio-Datei für ein Music Set hoch (ersetzt vorhandene Datei).
-- Auth: Admin erforderlich.
-- Content-Type: `multipart/form-data`
-- Felder:
-  - `file` (required): Audio-Datei (FLAC, MP3, WAV, AAC, M4A, OGG; max 500MB)
-- Response (200 OK):
-  ```json
-  {
-    "id": "uuid",
-    "title": "string",
-    "description": "string",
-    "visibility": "private|public",
-    "has_file": true,
-    "filename": "techno_set.flac",
-    "mime_type": "audio/flac",
-    "size_bytes": 500000000,
-    "presigned_url": "string (2h gültig)",
-    "created_at": "time.Time"
-  }
-  ```
-- Hinweis: Rate Limiting - max. 30 Uploads pro Tag pro Admin.
-
-#### `PUT /api/v1/admin/music-sets/:id`
-- Beschreibung: Aktualisiert Titel und Beschreibung eines Music Sets.
-- Auth: Admin erforderlich.
-- Request Body:
-  ```json
-  { "title": "string", "description": "string" }
-  ```
-- Response (200 OK):
-  ```json
-  { "message": "music set updated successfully" }
-  ```
-
-#### `PUT /api/v1/admin/music-sets/:id/visibility`
-- Beschreibung: Ändert die Sichtbarkeit eines Music Sets.
-- Auth: Admin erforderlich.
-- Request Body:
-  ```json
-  { "visibility": "private|public" }
-  ```
-- Response (200 OK):
-  ```json
-  { "message": "visibility updated successfully", "visibility": "public" }
-  ```
-
-#### `DELETE /api/v1/admin/music-sets/:id`
-- Beschreibung: Löscht ein Music Set inkl. Audio-Datei aus S3.
 - Auth: Admin erforderlich.
 - Response (200 OK):
   ```json
@@ -582,10 +529,9 @@ gelöscht werden.
   - `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`, `BACKUP_S3_USE_PATH_STYLE`
   - `BACKUP_BUCKET`
 - Lokal/Cache/Sync:
-  - `LOCAL_ASSETS_PATH` (Standard `/data/assets`)
+  - `LOCAL_ASSETS_PATH` (Standard `/data/assets`) – für Bilder
+  - `AUDIO_CACHE_PATH` (Standard `/data/assets_cache/audio`) – für Audio-Cache
   - `MEDIA_SYNC_ON_START` (true/false) – fehlende Bilder bei Start synchronisieren
-  - `MEDIA_CACHE_AUDIO` (true/false) – Audio lokal cachen
-  - `AUDIO_CACHE_PATH` (Standard `/data/assets_cache/audio`)
 
 
 ### **Health Check**
