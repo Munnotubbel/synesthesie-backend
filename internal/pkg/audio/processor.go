@@ -57,7 +57,7 @@ func ProcessAudio(ctx context.Context, audioData []byte, ext string) (*ProcessRe
 		}
 	}
 
-	// 2. Extract 150 point Waveform Peak Data
+	// 2. Extract 1000 point Waveform Peak Data
 	// Convert to 1000Hz mono raw f32le.
 	// At 100Hz, ffmpeg's lowpass filter (Nyquist=50Hz) destroys all transients,
 	// making the waveform look flat. At 1000Hz we capture the full amplitude
@@ -72,7 +72,7 @@ func ProcessAudio(ctx context.Context, audioData []byte, ext string) (*ProcessRe
 	if err != nil {
 		log.Printf("[HLS] Warning: failed to extract raw pcm data for peaks: %v", err)
 	} else {
-		result.PeakData = calculatePeaks(pcmData, 800)
+		result.PeakData = calculatePeaks(pcmData, 1000)
 		log.Printf("[HLS] Generated %d peak data points", len(result.PeakData))
 	}
 
