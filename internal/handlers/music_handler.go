@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -66,9 +65,9 @@ func TokenFromQueryMiddleware() gin.HandlerFunc {
 // getStreamURL returns the proxy stream URL for a music set (with auth)
 func (h *MusicHandler) getStreamURL(setID uuid.UUID, isAdmin bool) string {
 	if isAdmin {
-		return fmt.Sprintf("/api/v1/admin/music-sets/%s/stream", setID)
+		return fmt.Sprintf("/api/v1/admin/music-sets/%s/stream/master.m3u8", setID)
 	}
-	return fmt.Sprintf("/api/v1/user/music-sets/%s/stream", setID)
+	return fmt.Sprintf("/api/v1/user/music-sets/%s/stream/master.m3u8", setID)
 }
 
 // CreateMusicSet handles music set creation
@@ -515,76 +514,28 @@ func (h *MusicHandler) streamMusicSet(c *gin.Context, checkVisibility bool) {
 		}
 	}
 
-	// If it's a download request, serve the original source asset instead of HLS chunks
-	if isDownload {
-		if musicSet.SourceAsset == nil {
-			log.Printf("[Stream] Download requested but no source asset found for set %s", setID)
-			c.JSON(http.StatusNotFound, gin.H{"error": "original file not available for download"})
-			return
-		}
-
-		targetS3Key := musicSet.SourceAsset.Key
-
-		c.Header("Content-Type", musicSet.SourceAsset.MimeType)
-		c.Header("Content-Disposition", "attachment; filename=\""+musicSet.SourceAsset.Filename+"\"")
-		c.Header("Accept-Ranges", "bytes")
-
-		s3Stream, err := h.audioCacheService.StreamFromS3(c.Request.Context(), targetS3Key)
-		if err != nil {
-			log.Printf("[Stream] ERROR streaming download %s from S3: %v", targetS3Key, err)
-			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
-			return
-		}
-		defer s3Stream.Close()
-
-		c.Writer.WriteHeader(http.StatusOK)
-		io.Copy(c.Writer, s3Stream) //nolint:errcheck
-		return
-	}
-
-	filepathParam := c.Param("filepath")
-	filename := "master.m3u8" // Default to master playlist if no generic suffix is provided
-	if filepathParam != "" && filepathParam != "/" {
-		filename = strings.TrimPrefix(filepathParam, "/")
-	}
-
-	// For HLS, the asset Key is the path to the master.m3u8 (e.g. music/uuid/master.m3u8)
-	// We need to extract the base prefix (music/uuid) and append the requested filename.
-	baseS3Key := filepath.Dir(musicSet.Asset.Key)
-	targetS3Key := fmt.Sprintf("%s/%s", baseS3Key, filename)
-
-	log.Printf("[Stream] HLS requested: %s -> target S3 key: %s", filename, targetS3Key)
-
-	// Set appropriate Content-Type for HLS
-	contentType = "application/octet-stream"
-	if strings.HasSuffix(filename, ".m3u8") {
-		contentType = "application/vnd.apple.mpegurl"
-	} else if strings.HasSuffix(filename, ".ts") {
-		contentType = "video/MP2T"
-	}
-
-	c.Header("Content-Type", contentType)
-	c.Header("Accept-Ranges", "bytes")
-
-	// Cache headers: chunks are immutable (1 year), playlists can change but ours are static VOD
-	if strings.HasSuffix(filename, ".ts") {
-		c.Header("Cache-Control", "public, max-age=31536000") // 1 year cache for chunks
-	} else {
-		// m3u8 can technically change in live streams, but ours is VOD.
-		// Still, standard practice is short cache for m3u8.
-		c.Header("Cache-Control", "public, max-age=3600")
-	}
-
-	// We stream chunks directly from S3 without local caching.
-	// HLS chunks are small and fast to stream via io.Copy.
-	s3Stream, err := h.audioCacheService.StreamFromS3(c.Request.Context(), targetS3Key)
+	// Ensure the source audio file is cached locally on the backend server
+	targetS3Key := musicSet.Asset.Key
+	localPath, err := h.audioCacheService.EnsureCached(c.Request.Context(), targetS3Key)
 	if err != nil {
-		log.Printf("[Stream] ERROR streaming %s from S3: %v", targetS3Key, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "segment not found"})
+		log.Printf("[Stream] ERROR caching %s from S3: %v", targetS3Key, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare audio stream"})
 		return
 	}
-	defer s3Stream.Close()
 
-	c.Writer.WriteHeader(http.StatusOK)
-	io.Copy(c.Writer, s3Stream) //nolint:errcheck
+	c.Header("Content-Type", musicSet.Asset.MimeType)
+	if isDownload {
+		c.Header("Content-Disposition", "attachment; filename=\""+musicSet.Asset.Filename+"\"")
+	}
+
+	// Ensure CORS allows HTML5 Audio tags to fetch the stream
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Access-Control-Allow-Methods", "GET, OPTIONS")
+
+	// Cache headers: audio files are immutable
+	c.Header("Cache-Control", "public, max-age=31536000") // 1 year cache
+
+	// Serve the file dynamically using Go's native HTTP muxer
+	// This automatically handles 'Accept-Ranges: bytes' and 206 Partial Content queries for seeking.
+	http.ServeFile(c.Writer, c.Request, localPath)
 }

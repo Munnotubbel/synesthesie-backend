@@ -38,8 +38,12 @@ COPY --from=builder /build/synesthesie-api .
 # Copy templates
 COPY --from=builder /build/templates ./templates
 
-# Change ownership
+# Change ownership of app
 RUN chown -R synesthesie:synesthesie /app
+
+# Pre-create the cache directories and ensure the non-root user owns them.
+# When docker-compose maps the volume, it will respect these permissions if the host directory doesn't exist yet.
+RUN mkdir -p /data/assets_cache/audio && chown -R synesthesie:synesthesie /data
 
 # Switch to non-root user
 USER synesthesie

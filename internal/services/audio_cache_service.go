@@ -119,6 +119,14 @@ func (s *AudioCacheService) downloadAndCache(ctx context.Context, key, localPath
 	return file, info.Size(), nil
 }
 
+// EnsureCached ensures a file is cached locally and returns its absolute path.
+func (s *AudioCacheService) EnsureCached(ctx context.Context, key string) (string, error) {
+	if err := s.DownloadToCache(ctx, key); err != nil {
+		return "", err
+	}
+	return s.GetLocalPath(key), nil
+}
+
 // DownloadToCache downloads a file from S3 to local cache
 // This is blocking - use for first-time caching before serving
 func (s *AudioCacheService) DownloadToCache(ctx context.Context, key string) error {

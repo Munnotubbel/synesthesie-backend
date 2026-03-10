@@ -303,7 +303,6 @@ func main() {
 		userStream.Use(middleware.Auth(authService))
 		{
 			userStream.GET("/:id/stream", musicHandler.StreamMusicSetUser)
-			userStream.GET("/:id/stream/*filepath", musicHandler.StreamMusicSetUser)
 		}
 
 		// Admin routes
@@ -416,7 +415,6 @@ func main() {
 		adminStream.Use(middleware.AdminOnly())
 		{
 			adminStream.GET("/:id/stream", musicHandler.StreamMusicSetAdmin)
-			adminStream.GET("/:id/stream/*filepath", musicHandler.StreamMusicSetAdmin)
 		}
 
 		// Payment webhooks

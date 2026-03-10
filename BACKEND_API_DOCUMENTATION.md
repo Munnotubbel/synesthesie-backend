@@ -255,34 +255,35 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "description": "string",
     "duration": 7200,
     "play_count": 42,
-    "download_count": 5,
-    "presigned_url": "/api/v1/user/music-sets/uuid/stream",
+    "peak_data": [0.12, 0.45, ...], // 800 Datenpunkte für Waveform
+    "presigned_url": "/api/v1/user/music-sets/uuid/stream/master.m3u8",
+    "source_asset_id": "uuid", // ID der Originaldatei für Downloads
     "created_at": "time.Time"
   }
   ```
 
 #### `GET /api/v1/user/music-sets/:id/stream`
-- Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
+- Beschreibung: Progressive HTTP Audio-Streaming und Downloads.
 - Auth: erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
 - Query-Parameter:
-  - `download=true` (optional): Trackt als Download, setzt `Content-Disposition: attachment`
-- Response: Audio-Datei Stream
+  - `download=true` (optional): Serviert die **Originaldatei** (Bit-perfekt) als Download (`Content-Disposition: attachment`).
+- Response: Audio-Daten (MP3, WAV, FLAC, etc.).
 - Headers:
-  - `Content-Type: audio/mpeg` (oder anderes Audio-Format)
-  - `Accept-Ranges: bytes` (Seeking unterstützt)
-  - `Cache-Control: public, max-age=31536000` (1 Jahr Cache)
-- **Verwendung:**
-  ```html
-  <!-- Stream (zählt als Play) -->
-  <audio src="/api/v1/user/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
+  - `Content-Type`: `audio/mpeg`, `audio/flac`, `audio/wav`, etc.
+  - `Accept-Ranges: bytes`
+  - `Content-Disposition: attachment; filename="..."` (nur bei `download=true`)
+- **Verwendung im Frontend:**
+  ```tsx
+  // Native HTML5 Audio Streaming
+  const streamUrl = `/api/v1/user/music-sets/${uuid}/stream?token=xxx`;
+  <audio controls src={streamUrl} />
 
-  <!-- Download (zählt als Download) -->
-  <a href="/api/v1/user/music-sets/uuid/stream?token=YOUR_JWT_TOKEN&download=true">Download</a>
+  // Download Link
+  const downloadUrl = `/api/v1/user/music-sets/${uuid}/stream?token=xxx&download=true`;
   ```
 - **Caching-Verhalten:**
-  - **Cache-Hit:** Sofortiges Streaming vom lokalen SSD-Cache (schnell!)
-  - **Cache-Miss:** Proxy-Streaming direkt von S3 + Background-Download für zukünftige Requests
-  - Erster Request ist etwas langsamer (S3), alle folgenden sind super-schnell vom lokalen Cache
+  - **Download to Cache:** Der erste Stream-Request lädt die komplette Originaldatei von S3 in den lokalen Cache der Server-SSD (91GB+ Platz).
+  - **Serve (HTTP Range):** Das Backend streamt die Datei per `http.ServeFile` an den Browser. Dies unterstützt automatisches Instant-Scrubbing per `206 Partial Content`.
 
 ---
 
@@ -318,7 +319,7 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
   ```
 
 #### `GET /api/v1/admin/music-sets/:id`
-- Beschreibung: Ruft Details eines Music Sets ab mit Stream-URL.
+- Beschreibung: Ruft Details eines Music Sets ab.
 - Auth: Admin erforderlich.
 - Response (200 OK):
   ```json
@@ -329,31 +330,20 @@ Alle Endpunkte sind unter dem Präfix `/api/v1` erreichbar.
     "visibility": "private|public",
     "has_file": true,
     "duration": 7200,
-    "play_count": 42,
-    "download_count": 5,
+    "peak_data": [...],
     "filename": "techno_set.flac",
     "mime_type": "audio/flac",
-    "size_bytes": 500000000,
-    "presigned_url": "/api/v1/admin/music-sets/uuid/stream",
+    "presigned_url": "/api/v1/admin/music-sets/uuid/stream/master.m3u8",
+    "source_asset_id": "uuid",
     "created_at": "time.Time",
     "updated_at": "time.Time"
   }
   ```
 
 #### `GET /api/v1/admin/music-sets/:id/stream`
-- Beschreibung: Streamt die Audio-Datei mit lokalem Server-Cache.
-- Auth: Admin erforderlich (Bearer Token im Header ODER `?token=xxx` Query-Parameter).
-- Query-Parameter:
-  - `download=true` (optional): Trackt als Download, setzt `Content-Disposition: attachment`
-- Response: Audio-Datei Stream
-- Headers: `Accept-Ranges: bytes`, `Cache-Control: public, max-age=31536000`
-- **Verwendung:**
-  ```html
-  <audio src="/api/v1/admin/music-sets/uuid/stream?token=YOUR_JWT_TOKEN" controls />
-  ```
-- **Caching-Verhalten:**
-  - **Cache-Hit:** Sofortiges Streaming vom lokalen SSD-Cache (schnell!)
-  - **Cache-Miss:** Proxy-Streaming direkt von S3 + Background-Download für zukünftige Requests
+- Beschreibung: Progressive HTTP Audio-Streaming und Downloads für Admins.
+- Auth: Admin erforderlich (Header oder `?token=xxx`).
+- Verhalten: Identisch zum User-Endpunkt, unterstützt reines Audio-Streaming per `Audio` Element und Downloads per `?download=true`.
 
 #### `POST /api/v1/admin/music-sets`
 - Beschreibung: Erstellt ein neues Music Set (ohne Datei).

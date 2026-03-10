@@ -19,7 +19,6 @@ import (
 type ProcessResult struct {
 	Duration int
 	PeakData []float32
-	HLSFiles map[string][]byte // Filename -> Data (master.m3u8, chunk_000.ts, etc)
 }
 
 // ProcessAudio takes raw audio bytes, writes to a temp file, runs FFmpeg to extract
@@ -37,9 +36,7 @@ func ProcessAudio(ctx context.Context, audioData []byte, ext string) (*ProcessRe
 		return nil, fmt.Errorf("failed to write input file: %w", err)
 	}
 
-	result := &ProcessResult{
-		HLSFiles: make(map[string][]byte),
-	}
+	result := &ProcessResult{}
 
 	// 1. Get Duration
 	log.Printf("[HLS] Extracting duration for %s", inFile)
@@ -76,62 +73,6 @@ func ProcessAudio(ctx context.Context, audioData []byte, ext string) (*ProcessRe
 		log.Printf("[HLS] Generated %d peak data points", len(result.PeakData))
 	}
 
-	// 3. Detect the input audio codec to decide whether to copy or re-encode.
-	// For MP3 sources: stream-copy = bit-perfect, zero quality loss, no bass distortion.
-	// For FLAC/WAV/OGG: transcode to libmp3lame at highest VBR quality.
-	log.Printf("[HLS] Generating HLS segments for %s", inFile)
-	hlsOutFile := filepath.Join(tempDir, "master.m3u8")
-
-	inputCodec, _ := runCommand(ctx, "ffprobe",
-		"-v", "error",
-		"-select_streams", "a:0",
-		"-show_entries", "stream=codec_name",
-		"-of", "default=noprint_wrappers=1:nokey=1",
-		inFile)
-	inputCodec = strings.TrimSpace(inputCodec)
-	log.Printf("[HLS] Input audio codec detected: %s", inputCodec)
-
-	hlsArgs := []string{"-i", inFile}
-	if inputCodec == "mp3" {
-		// MP3 source: stream-copy into MPEG-TS segments — bit-perfect, no artifacts
-		log.Printf("[HLS] Using stream copy for MP3 input (zero quality loss)")
-		hlsArgs = append(hlsArgs, "-c:a", "copy")
-	} else {
-		// FLAC/WAV/OGG/etc: transcode with highest quality libmp3lame VBR mode
-		// -V 0 = highest VBR quality (~245kbps average, transparent)
-		log.Printf("[HLS] Transcoding %s → libmp3lame VBR 0", inputCodec)
-		hlsArgs = append(hlsArgs, "-c:a", "libmp3lame", "-V", "0")
-	}
-	hlsArgs = append(hlsArgs,
-		"-f", "hls",
-		"-hls_time", "10", // 10 second chunks
-		"-hls_list_size", "0", // keep all segments in playlist
-		"-hls_segment_filename", filepath.Join(tempDir, "chunk_%03d.ts"),
-		hlsOutFile)
-
-	_, err = runCommand(ctx, "ffmpeg", hlsArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate hls: %w", err)
-	}
-
-	// 4. Read all generated files back into memory map
-	entries, err := os.ReadDir(tempDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read temp dir: %w", err)
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasSuffix(name, ".m3u8") || strings.HasSuffix(name, ".ts") {
-			data, err := os.ReadFile(filepath.Join(tempDir, name))
-			if err != nil {
-				return nil, fmt.Errorf("failed to read generated file %s: %w", name, err)
-			}
-			result.HLSFiles[name] = data
-		}
-	}
-
-	log.Printf("[HLS] Successfully generated %d HLS files", len(result.HLSFiles))
 	return result, nil
 }
 
@@ -190,24 +131,18 @@ func calculatePeaks(pcmData []byte, count int) []float32 {
 			end = samplesCount
 		}
 
-		// Peak detection: use the maximum absolute value in this bin.
-		// This is how professional players like GNOME Audio render waveforms:
-		// each bar reflects the loudest instant, not the average energy (RMS).
-		// This preserves transients like snares, hi-hats, and attack peaks.
-		var maxVal float32 = 0.0
+		// Peak Amplitude Calculation (matches WaveSurfer's internal logic)
+		var maxPeak float32 = 0.0
 		for j := start; j < end; j++ {
-			val := samples[j]
-			if val < 0 {
-				val = -val // abs()
-			}
-			if val > maxVal {
-				maxVal = val
+			val := float32(math.Abs(float64(samples[j])))
+			if val > maxPeak {
+				maxPeak = val
 			}
 		}
 
-		peaks[i] = maxVal
-		if maxVal > globalMax {
-			globalMax = maxVal
+		peaks[i] = maxPeak
+		if maxPeak > globalMax {
+			globalMax = maxPeak
 		}
 	}
 

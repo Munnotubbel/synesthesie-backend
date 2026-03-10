@@ -96,22 +96,7 @@ func (s *MusicService) UploadMusicSetFile(ctx context.Context, setID uuid.UUID, 
 	// A unique directory prefix for this set's HLS files
 	baseKey := fmt.Sprintf("music/%s", uuid.New().String())
 
-	// Upload all generated HLS files to S3 under the baseKey
-	log.Printf("[Upload] Uploading %d HLS segments to S3...", len(result.HLSFiles))
-	for name, fileData := range result.HLSFiles {
-		hlsKey := fmt.Sprintf("%s/%s", baseKey, name)
-
-		contentType := "application/octet-stream"
-		if strings.HasSuffix(name, ".m3u8") {
-			contentType = "application/vnd.apple.mpegurl"
-		} else if strings.HasSuffix(name, ".ts") {
-			contentType = "video/MP2T"
-		}
-
-		if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, hlsKey, fileData, contentType); err != nil {
-			return nil, fmt.Errorf("failed to upload HLS segment %s to S3: %w", name, err)
-		}
-	}
+	// (HLS looping uploads removed, processing now only extracts metadata)
 
 	// Delete old asset if it exists
 	if musicSet.AssetID != nil {
@@ -130,64 +115,50 @@ func (s *MusicService) UploadMusicSetFile(ctx context.Context, setID uuid.UUID, 
 		}
 	}
 
-	// Create Asset record for the master.m3u8
-	masterKey := fmt.Sprintf("%s/master.m3u8", baseKey)
-	asset := &models.Asset{
-		Key:        masterKey,
-		Filename:   "master.m3u8",
-		MimeType:   "application/vnd.apple.mpegurl",
-		SizeBytes:  int64(len(result.HLSFiles["master.m3u8"])), // Just the playlist size
-		Visibility: models.AssetVisibilityPrivate,
-	}
-	if err := s.db.Create(asset).Error; err != nil {
-		// Attempt cleanup on DB failure (not exhaustive prefix deletion, but best effort)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
-		return nil, fmt.Errorf("failed to create asset record: %w", err)
+	if musicSet.SourceAssetID != nil {
+		var oldSourceAsset models.Asset
+		if err := s.db.First(&oldSourceAsset, "id = ?", *musicSet.SourceAssetID).Error; err == nil {
+			_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, oldSourceAsset.Key)
+			s.db.Delete(&oldSourceAsset)
+		}
 	}
 
-	// Upload original source file for downloads (SourceAsset)
+	// Upload original source file for streaming and downloads
 	sourceKey := fmt.Sprintf("%s/source%s", baseKey, ext)
-	log.Printf("[Upload] Uploading original source file for downloads: %s", sourceKey)
+	log.Printf("[Upload] Uploading original source file: %s", sourceKey)
 	if err := s.s3Service.UploadMedia(ctx, s.cfg.MediaAudioBucket, sourceKey, data, mimeType); err != nil {
-		// Cleanup the previously created HLS asset record
-		s.db.Delete(asset)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
 		return nil, fmt.Errorf("failed to upload original source file: %w", err)
 	}
 
 	// Create Asset record for the original source file
-	sourceAsset := &models.Asset{
+	asset := &models.Asset{
 		Key:        sourceKey,
 		Filename:   filename, // Use the user's original filename (e.g., "05 Let It Go.flac")
 		MimeType:   mimeType,
 		SizeBytes:  int64(len(data)),
 		Visibility: models.AssetVisibilityPrivate,
 	}
-	if err := s.db.Create(sourceAsset).Error; err != nil {
-		s.db.Delete(asset)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
+	if err := s.db.Create(asset).Error; err != nil {
 		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, sourceKey)
-		return nil, fmt.Errorf("failed to create source asset record: %w", err)
+		return nil, fmt.Errorf("failed to create asset record: %w", err)
 	}
 
 	// Update music set with asset ID, source asset ID, duration, and peak data
 	musicSet.AssetID = &asset.ID
-	musicSet.SourceAssetID = &sourceAsset.ID
+	musicSet.SourceAssetID = nil // Obsolete, AssetID is the source
 	musicSet.Duration = result.Duration
 	musicSet.PeakData = result.PeakData
 
 	if err := s.db.Save(&musicSet).Error; err != nil {
 		// Cleanup
 		s.db.Delete(asset)
-		s.db.Delete(sourceAsset)
-		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, masterKey)
 		_ = s.s3Service.DeleteMedia(ctx, s.cfg.MediaAudioBucket, sourceKey)
 		return nil, fmt.Errorf("failed to update music set: %w", err)
 	}
 
 	// Load asset relations
 	musicSet.Asset = asset
-	musicSet.SourceAsset = sourceAsset
+	musicSet.SourceAsset = nil
 
 	return &musicSet, nil
 }
